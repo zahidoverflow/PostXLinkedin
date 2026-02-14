@@ -8,11 +8,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/bot"
 )
 
 func main() {
 	logger := log.New(os.Stdout, "", log.LstdFlags|log.Lmicroseconds)
+
+	// Convenience for VPS/local runs: load .env if present.
+	// systemd EnvironmentFile still works and will override as needed.
+	_ = godotenv.Overload()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

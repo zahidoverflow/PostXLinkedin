@@ -2,6 +2,7 @@ package bot
 
 import (
 	"errors"
+	"path/filepath"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -10,6 +11,13 @@ import (
 type Config struct {
 	TelegramBotToken string `env:"TELEGRAM_BOT_TOKEN,notEmpty"`
 	AllowedChatID    int64  `env:"ALLOWED_CHAT_ID" envDefault:"0"`
+
+	// Where the bot persists setup done via Telegram chat (JSON).
+	ConfigPath string `env:"CONFIG_PATH" envDefault:"data/config.json"`
+
+	// Optional "AI agent" webhook (caption transformer).
+	AgentWebhookURL   string `env:"AGENT_WEBHOOK_URL" envDefault:""`
+	AgentSharedSecret string `env:"AGENT_SHARED_SECRET" envDefault:""`
 
 	// Optional: n8n webhook that will do the posting (if set, bot uses n8n mode).
 	N8NWebhookURL string `env:"N8N_WEBHOOK_URL" envDefault:""`
@@ -42,20 +50,7 @@ func LoadConfig() (Config, error) {
 	if cfg.MaxImageBytes <= 0 {
 		return Config{}, errors.New("MAX_IMAGE_BYTES must be > 0")
 	}
-	if cfg.N8NWebhookURL == "" {
-		// Direct mode: validate required creds for selected platforms.
-		if cfg.EnableX && cfg.XUserBearerToken == "" {
-			return Config{}, errors.New("direct mode: ENABLE_X=true requires X_USER_BEARER_TOKEN (or set N8N_WEBHOOK_URL)")
-		}
-		if cfg.EnableLinkedIn {
-			if cfg.LinkedInAccessToken == "" {
-				return Config{}, errors.New("direct mode: ENABLE_LINKEDIN=true requires LINKEDIN_ACCESS_TOKEN (or set N8N_WEBHOOK_URL)")
-			}
-			if cfg.LinkedInAuthorURN == "" {
-				return Config{}, errors.New("direct mode: ENABLE_LINKEDIN=true requires LINKEDIN_AUTHOR_URN (or set N8N_WEBHOOK_URL)")
-			}
-		}
-	}
+	cfg.ConfigPath = filepath.Clean(cfg.ConfigPath)
 	return cfg, nil
 }
 

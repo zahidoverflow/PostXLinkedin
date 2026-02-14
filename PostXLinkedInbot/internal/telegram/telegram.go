@@ -25,6 +25,18 @@ func (c *Client) SendText(chatID int64, text string) (tgbotapi.Message, error) {
 	return c.bot.Send(tgbotapi.NewMessage(chatID, text))
 }
 
+func (c *Client) SendTextWithKeyboard(chatID int64, text string, keyboard tgbotapi.ReplyKeyboardMarkup) (tgbotapi.Message, error) {
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ReplyMarkup = keyboard
+	return c.bot.Send(m)
+}
+
+func (c *Client) SendTextRemoveKeyboard(chatID int64, text string) (tgbotapi.Message, error) {
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+	return c.bot.Send(m)
+}
+
 type DownloadedFile struct {
 	Bytes    []byte
 	Base64   string

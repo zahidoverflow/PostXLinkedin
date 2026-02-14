@@ -14,6 +14,17 @@ Two supported modes:
 
 ## Quick Start (VPS)
 
+### Fast Install (systemd)
+
+From `PostXLinkedInbot/` on your VPS:
+
+```bash
+sudo ./scripts/vps/install.sh
+sudo nano /opt/PostXLinkedin/PostXLinkedInbot/.env
+sudo systemctl start postxlinkedinbot.service
+sudo journalctl -u postxlinkedinbot.service -f
+```
+
 ### 1) Run n8n
 
 From `n8n/`:
@@ -60,3 +71,4 @@ See `PostXLinkedInbot/.env.example`.
 
 - The bot only posts when you send a **photo** with a **caption**.
 - The default `MAX_IMAGE_BYTES` is `5,000,000` to stay under common X image limits. Adjust if you want.
+- Setup can be done inside Telegram: `/start` will launch a wizard and save to `CONFIG_PATH`.

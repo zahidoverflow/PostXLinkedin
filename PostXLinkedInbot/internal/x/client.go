@@ -24,6 +24,7 @@ func New(httpClient *http.Client, baseURL string, userBearerToken string) *Clien
 type UploadMediaRequest struct {
 	Media     string `json:"media"` // base64
 	MediaType string `json:"media_type,omitempty"`
+	Category  string `json:"media_category,omitempty"` // required by X docs for this endpoint
 }
 
 type UploadMediaResponse struct {
@@ -36,6 +37,7 @@ func (c *Client) UploadMedia(ctx context.Context, base64Media string, mediaType 
 	reqBody := UploadMediaRequest{
 		Media:     base64Media,
 		MediaType: mediaType,
+		Category:  "tweet_image",
 	}
 	b, _ := json.Marshal(reqBody)
 

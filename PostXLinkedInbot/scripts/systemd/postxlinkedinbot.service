@@ -20,4 +20,3 @@ ReadWritePaths=/opt/PostXLinkedin/PostXLinkedInbot
 
 [Install]
 WantedBy=multi-user.target
-
