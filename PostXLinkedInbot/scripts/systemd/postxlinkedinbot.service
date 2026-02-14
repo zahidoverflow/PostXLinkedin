@@ -1,0 +1,23 @@
+[Unit]
+Description=PostXLinkedIn Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/PostXLinkedin/PostXLinkedInbot
+EnvironmentFile=/opt/PostXLinkedin/PostXLinkedInbot/.env
+ExecStart=/opt/PostXLinkedin/PostXLinkedInbot/postxlinkedinbot
+Restart=on-failure
+RestartSec=3
+
+# Hardening (safe defaults; adjust if needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/PostXLinkedin/PostXLinkedInbot
+
+[Install]
+WantedBy=multi-user.target
+
