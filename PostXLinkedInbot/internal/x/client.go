@@ -22,13 +22,8 @@ func New(httpClient *http.Client, baseURL string, userBearerToken string) *Clien
 }
 
 type UploadMediaRequest struct {
-	Media        string `json:"media"` // base64
-	MediaType    string `json:"media_type,omitempty"`
-	Category     string `json:"media_category,omitempty"` // e.g. "tweet_image"
-	AltText      string `json:"alt_text,omitempty"`
-	Shared       bool   `json:"shared,omitempty"`
-	OwnerID      string `json:"owner_id,omitempty"`
-	AdditionalID string `json:"additional_owners,omitempty"`
+	Media     string `json:"media"` // base64
+	MediaType string `json:"media_type,omitempty"`
 }
 
 type UploadMediaResponse struct {
@@ -41,7 +36,6 @@ func (c *Client) UploadMedia(ctx context.Context, base64Media string, mediaType 
 	reqBody := UploadMediaRequest{
 		Media:     base64Media,
 		MediaType: mediaType,
-		Category:  "tweet_image",
 	}
 	b, _ := json.Marshal(reqBody)
 
