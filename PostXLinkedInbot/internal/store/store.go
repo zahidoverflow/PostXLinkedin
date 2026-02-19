@@ -36,6 +36,9 @@ type Config struct {
 
 	// direct mode
 	XUserBearerToken string `json:"x_user_bearer_token,omitempty"`
+	XRefreshToken    string `json:"x_refresh_token,omitempty"`
+	XClientID        string `json:"x_client_id,omitempty"`
+	XClientSecret    string `json:"x_client_secret,omitempty"`
 	XAPIBaseURL      string `json:"x_api_base_url,omitempty"`
 
 	LinkedInAccessToken string `json:"linkedin_access_token,omitempty"`

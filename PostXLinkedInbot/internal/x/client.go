@@ -22,22 +22,38 @@ func New(httpClient *http.Client, baseURL string, userBearerToken string) *Clien
 }
 
 type UploadMediaRequest struct {
-	Media     string `json:"media"` // base64
-	MediaType string `json:"media_type,omitempty"`
-	Category  string `json:"media_category,omitempty"` // required by X docs for this endpoint
+	Media    string `json:"media"`          // base64-encoded file data
+	Category string `json:"media_category"` // required: tweet_image, tweet_gif, tweet_video, etc.
+	// Optional fields per latest X v2 docs:
+	MediaType        string   `json:"media_type,omitempty"`         // e.g. image/jpeg, image/png
+	AdditionalOwners []string `json:"additional_owners,omitempty"` // user IDs
+	Shared           bool     `json:"shared,omitempty"`
 }
 
 type UploadMediaResponse struct {
 	Data struct {
-		ID string `json:"id"`
+		ID               string `json:"id"`
+		MediaKey         string `json:"media_key,omitempty"`
+		Size             int64  `json:"size,omitempty"`
+		ExpiresAfterSecs int    `json:"expires_after_secs,omitempty"`
 	} `json:"data"`
 }
 
 func (c *Client) UploadMedia(ctx context.Context, base64Media string, mediaType string) (string, error) {
+	// Only send media_type if it's a real image MIME the X API accepts.
+	// X rejects application/octet-stream and other non-image types.
+	cleanType := mediaType
+	switch cleanType {
+	case "image/jpeg", "image/png", "image/bmp", "image/webp", "image/pjpeg", "image/tiff":
+		// valid — keep as-is
+	default:
+		// Not in X's allowed list; omit and let X auto-detect.
+		cleanType = ""
+	}
 	reqBody := UploadMediaRequest{
 		Media:     base64Media,
-		MediaType: mediaType,
 		Category:  "tweet_image",
+		MediaType: cleanType,
 	}
 	b, _ := json.Marshal(reqBody)
 

@@ -37,6 +37,29 @@ func (c *Client) SendTextRemoveKeyboard(chatID int64, text string) (tgbotapi.Mes
 	return c.bot.Send(m)
 }
 
+func (c *Client) SendHTML(chatID int64, html string) (tgbotapi.Message, error) {
+	m := tgbotapi.NewMessage(chatID, html)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableWebPagePreview = true
+	return c.bot.Send(m)
+}
+
+func (c *Client) SendHTMLWithKeyboard(chatID int64, html string, keyboard tgbotapi.ReplyKeyboardMarkup) (tgbotapi.Message, error) {
+	m := tgbotapi.NewMessage(chatID, html)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableWebPagePreview = true
+	m.ReplyMarkup = keyboard
+	return c.bot.Send(m)
+}
+
+func (c *Client) SendHTMLRemoveKeyboard(chatID int64, html string) (tgbotapi.Message, error) {
+	m := tgbotapi.NewMessage(chatID, html)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableWebPagePreview = true
+	m.ReplyMarkup = tgbotapi.NewRemoveKeyboard(true)
+	return c.bot.Send(m)
+}
+
 type DownloadedFile struct {
 	Bytes    []byte
 	Base64   string
@@ -80,18 +103,18 @@ func (c *Client) DownloadPhoto(ctx context.Context, fileID string) (DownloadedFi
 		return DownloadedFile{}, err
 	}
 
-	// Determine MIME using headers and extension as hint.
-	m := res.Header.Get("Content-Type")
-	if m == "" {
-		ext := path.Ext(f.FilePath)
-		if ext != "" {
-			m = mime.TypeByExtension(ext)
+	// Determine MIME: prefer Content-Type header, then extension, then byte sniffing.
+	m := strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0])
+	if m == "" || m == "application/octet-stream" {
+		if ext := path.Ext(f.FilePath); ext != "" {
+			if byExt := mime.TypeByExtension(ext); byExt != "" {
+				m = byExt
+			}
 		}
 	}
-	if m == "" {
-		m = "application/octet-stream"
-	} else {
-		// Strip charset, etc.
+	if m == "" || m == "application/octet-stream" {
+		// Sniff actual bytes — reliably detects JPEG, PNG, GIF, WebP, etc.
+		m = http.DetectContentType(b)
 		m = strings.TrimSpace(strings.Split(m, ";")[0])
 	}
 

@@ -1,6 +1,35 @@
+# ─── Secrets & credentials ────────────────────────────────────
 .env
+.env.*
+!.env.example
+
+# Persisted bot config (contains OAuth tokens)
+data/config.json
+data/config.json.tmp
+
+# ─── Build artifacts ──────────────────────────────────────────
+postxlinkedinbot
+postxlinkedinbot.exe
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 *.test
 *.out
 dist/
+bin/
 
+# ─── Go ──────────────────────────────────────────────────────
+vendor/
+go.work
+go.work.sum
+
+# ─── IDE / editor ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

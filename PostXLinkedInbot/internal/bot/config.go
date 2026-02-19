@@ -29,11 +29,14 @@ type Config struct {
 	EnableLinkedIn bool `env:"ENABLE_LINKEDIN" envDefault:"true"`
 
 	XUserBearerToken string `env:"X_USER_BEARER_TOKEN" envDefault:""`
+	XRefreshToken    string `env:"X_REFRESH_TOKEN" envDefault:""`
+	XClientID        string `env:"X_CLIENT_ID" envDefault:""`
+	XClientSecret    string `env:"X_CLIENT_SECRET" envDefault:""`
 	XAPIBaseURL      string `env:"X_API_BASE_URL" envDefault:"https://api.x.com"`
 
 	LinkedInAccessToken string `env:"LINKEDIN_ACCESS_TOKEN" envDefault:""`
 	LinkedInAuthorURN   string `env:"LINKEDIN_AUTHOR_URN" envDefault:""`
-	LinkedInVersion     string `env:"LINKEDIN_VERSION" envDefault:"202404"`
+	LinkedInVersion     string `env:"LINKEDIN_VERSION" envDefault:"202601"`
 
 	// Hard limit (bytes) to avoid huge uploads; X image limits are commonly small.
 	MaxImageBytes int64 `env:"MAX_IMAGE_BYTES" envDefault:"5000000"`

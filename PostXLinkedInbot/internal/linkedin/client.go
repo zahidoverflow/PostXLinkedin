@@ -19,7 +19,7 @@ type Client struct {
 func New(httpClient *http.Client, accessToken string, linkedInVersion string) *Client {
 	v := strings.TrimSpace(linkedInVersion)
 	if v == "" {
-		v = "202404"
+		v = "202601"
 	}
 	return &Client{httpClient: httpClient, token: accessToken, version: v}
 }
@@ -98,10 +98,6 @@ type createPostReq struct {
 	IsReshareDisabledByAuthor bool   `json:"isReshareDisabledByAuthor,omitempty"`
 }
 
-type createPostResp struct {
-	ID string `json:"id"`
-}
-
 func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption string, imageURN string, title string) (string, error) {
 	reqBody := createPostReq{
 		Author:     authorURN,
@@ -141,13 +137,58 @@ func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption 
 		return "", fmt.Errorf("linkedin create post failed: %s: %s", res.Status, body)
 	}
 
-	var pr createPostResp
-	_ = json.NewDecoder(res.Body).Decode(&pr)
-	if pr.ID == "" {
-		// Some LinkedIn APIs may respond differently; if so, still treat as success by status code.
-		return "ok", nil
+	// LinkedIn returns the post ID in the x-restli-id response header.
+	if id := res.Header.Get("x-restli-id"); id != "" {
+		return id, nil
 	}
-	return pr.ID, nil
+	// Fallback: try parsing the JSON body.
+	var pr struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&pr)
+	if pr.ID != "" {
+		return pr.ID, nil
+	}
+	return "ok", nil
+}
+
+// CreateTextPost creates a text-only post (no media) on LinkedIn.
+func (c *Client) CreateTextPost(ctx context.Context, authorURN string, text string) (string, error) {
+	reqBody := createPostReq{
+		Author:     authorURN,
+		Commentary: text,
+		Visibility: "PUBLIC",
+		Distribution: map[string]any{
+			"feedDistribution":               "MAIN_FEED",
+			"targetEntities":                 []any{},
+			"thirdPartyDistributionChannels": []any{},
+		},
+		LifecycleState:            "PUBLISHED",
+		IsReshareDisabledByAuthor: false,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.linkedin.com/rest/posts", bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	c.addHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := readSmall(res.Body, 12<<10)
+		return "", fmt.Errorf("linkedin create text post failed: %s: %s", res.Status, body)
+	}
+	if id := res.Header.Get("x-restli-id"); id != "" {
+		return id, nil
+	}
+	return "ok", nil
 }
 
 func (c *Client) addHeaders(req *http.Request) {
