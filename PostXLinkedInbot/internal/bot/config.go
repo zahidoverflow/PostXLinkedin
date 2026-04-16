@@ -19,12 +19,6 @@ type Config struct {
 	AgentWebhookURL   string `env:"AGENT_WEBHOOK_URL" envDefault:""`
 	AgentSharedSecret string `env:"AGENT_SHARED_SECRET" envDefault:""`
 
-	// Optional: n8n webhook that will do the posting (if set, bot uses n8n mode).
-	N8NWebhookURL string `env:"N8N_WEBHOOK_URL" envDefault:""`
-
-	// Shared secret between bot and n8n workflow. If set here, n8n must verify it.
-	N8NSharedSecret string `env:"N8N_SHARED_SECRET" envDefault:""`
-
 	EnableX        bool `env:"ENABLE_X" envDefault:"true"`
 	EnableLinkedIn bool `env:"ENABLE_LINKEDIN" envDefault:"true"`
 

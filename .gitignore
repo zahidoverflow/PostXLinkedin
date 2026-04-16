@@ -33,8 +33,3 @@ go.work.sum
 *~
 .DS_Store
 Thumbs.db
-
-# ─── n8n ──────────────────────────────────────────────────────
-n8n/.n8n/
-n8n/workflows/*.json
-!n8n/workflows/README.md

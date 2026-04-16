@@ -12,7 +12,6 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/agent"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/linkedin"
-	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/n8n"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/setup"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/store"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/telegram"
@@ -50,11 +49,6 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 	}
 	logger.Printf("config path: %s", cfg.ConfigPath)
 
-	var n8 *n8n.Client
-	if cfg.N8NWebhookURL != "" {
-		n8 = n8n.NewClient(httpClient, cfg.N8NWebhookURL, cfg.N8NSharedSecret)
-	}
-
 	// Setup wizard sessions (per-chat).
 	sessions := map[int64]*setup.Wizard{}
 
@@ -89,14 +83,14 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 				continue
 			}
 
-			if err := handleMessage(ctx, logger, &cfg, tg, n8, sessions, upd.Message); err != nil {
+			if err := handleMessage(ctx, logger, &cfg, tg, sessions, upd.Message); err != nil {
 				logger.Printf("handleMessage error: %v", err)
 			}
 		}
 	}
 }
 
-func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *telegram.Client, n8 *n8n.Client, sessions map[int64]*setup.Wizard, msg *tgbotapi.Message) error {
+func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *telegram.Client, sessions map[int64]*setup.Wizard, msg *tgbotapi.Message) error {
 	chatID := msg.Chat.ID
 
 	// Setup wizard active: consume plain text replies but reject photos/media during setup.
@@ -296,45 +290,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	// Sanitize newlines: remove carriage returns to avoid truncation issues on some platforms.
 	caption = strings.ReplaceAll(caption, "\r", "")
 
-	// Mode 1: n8n webhook (only supports image posts).
-	if n8 != nil {
-		if dl == nil {
-			_, _ = tg.SendText(chatID, "n8n mode requires a photo with caption. Text-only posts are not supported in n8n mode.")
-			return nil
-		}
-		_, _ = tg.SendText(chatID, "\u23f3 Posting via n8n...")
-
-		req := n8n.PostRequest{
-			Caption:       caption,
-			ImageBase64:   dl.Base64,
-			ImageMIME:     dl.MIME,
-			ImageFilename: dl.Filename,
-			Telegram: n8n.TelegramMeta{
-				ChatID:    chatID,
-				MessageID: msg.MessageID,
-				From: n8n.TelegramFrom{
-					ID:        msg.From.ID,
-					UserName:  msg.From.UserName,
-					FirstName: msg.From.FirstName,
-					LastName:  msg.From.LastName,
-				},
-			},
-		}
-
-		resp, err := n8.Post(ctx, req)
-		if err != nil {
-			_, _ = tg.SendHTML(chatID, "\u274c <b>Posting failed</b> (n8n error).\n\nCheck server logs or verify your n8n webhook is running.")
-			return err
-		}
-		if resp.OK {
-			_, _ = tg.SendHTML(chatID, "\u2705 <b>Posted successfully</b> via n8n!")
-			return nil
-		}
-		_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c <b>Posting failed:</b> %s", escapeHTML(resp.Error)))
-		return fmt.Errorf("n8n failed: %s", resp.Error)
-	}
-
-	// Mode 2: direct API calls to X + LinkedIn.
+	// Mode: direct API calls to X + LinkedIn.
 	httpClient := &http.Client{Timeout: 60 * time.Second}
 	var results []string
 	var errs []string
@@ -476,19 +432,7 @@ func mergeStored(cfg Config, stored store.Config) Config {
 		cfg.MaxImageBytes = stored.MaxImageBytes
 	}
 
-	if stored.Mode == store.ModeN8N {
-		cfg.N8NWebhookURL = stored.N8NWebhookURL
-		cfg.N8NSharedSecret = stored.N8NSharedSecret
-		cfg.AgentWebhookURL = stored.AgentWebhookURL
-		cfg.AgentSharedSecret = stored.AgentSharedSecret
-		// In n8n mode we leave direct creds as-is (unused).
-		return cfg
-	}
-
 	// Direct mode.
-	cfg.N8NWebhookURL = ""
-	cfg.N8NSharedSecret = ""
-
 	cfg.EnableX = stored.EnableX
 	cfg.EnableLinkedIn = stored.EnableLinkedIn
 
@@ -523,9 +467,6 @@ func mergeStored(cfg Config, stored store.Config) Config {
 }
 
 func isConfigured(cfg Config) bool {
-	if cfg.N8NWebhookURL != "" {
-		return true
-	}
 	if cfg.EnableX && cfg.XUserBearerToken != "" {
 		return true
 	}
@@ -560,31 +501,12 @@ func guideText() string {
 }
 
 func statusText(cfg Config) string {
-	mode := "direct"
-	if cfg.N8NWebhookURL != "" {
-		mode = "n8n"
-	}
 	var b strings.Builder
 	b.WriteString("\U0001f4ca <b>Bot Status</b>\n\n")
-	b.WriteString("\u2022 <b>Mode:</b> " + mode + "\n")
 	if cfg.AllowedChatID != 0 {
 		b.WriteString(fmt.Sprintf("\u2022 <b>Locked chat:</b> %d\n", cfg.AllowedChatID))
 	} else {
 		b.WriteString("\u2022 <b>Locked chat:</b> no\n")
-	}
-	if mode == "n8n" {
-		b.WriteString("\u2022 <b>n8n webhook:</b> set\n")
-		if cfg.N8NSharedSecret != "" {
-			b.WriteString("\u2022 <b>n8n secret:</b> set\n")
-		} else {
-			b.WriteString("\u2022 <b>n8n secret:</b> \u274c not set\n")
-		}
-		if cfg.AgentWebhookURL != "" {
-			b.WriteString("\u2022 <b>Agent:</b> \u2705 enabled\n")
-		} else {
-			b.WriteString("\u2022 <b>Agent:</b> disabled\n")
-		}
-		return b.String()
 	}
 
 	b.WriteString("\n<b>Platforms:</b>\n")

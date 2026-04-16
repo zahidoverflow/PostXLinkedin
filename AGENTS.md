@@ -12,14 +12,12 @@ Maintain and extend a Go-based Telegram bot that posts a photo + caption to:
 The bot supports:
 
 - Direct mode (default): bot posts to X + LinkedIn itself
-- n8n mode (optional): bot forwards payload to an n8n webhook
 - Optional "agent webhook" to rewrite/format captions before posting
 - Telegram chat setup wizard (`/start`, `/setup`) that persists config to disk
 
 ## Repo Layout
 
 - `PostXLinkedInbot/`: Go module (the bot)
-- `n8n/`: optional n8n docker-compose scaffolding
 
 Key bot packages:
 
@@ -64,10 +62,7 @@ If you add new features, add at least:
 1. Direct mode:
    - X: upload media, then create post (truncate to fit if needed)
    - LinkedIn: initialize image upload, upload bytes, create image post
-2. n8n mode:
-   - Bot posts JSON payload to `N8N_WEBHOOK_URL`
-   - Workflow returns JSON `{ "ok": true }` on success
-3. Agent webhook (optional):
+2. Agent webhook (optional):
    - Bot calls the agent before posting
    - Request: `{ "caption": "...", "targets": ["x","linkedin"] }`
    - Response: `{ "ok": true, "caption": "..." }`

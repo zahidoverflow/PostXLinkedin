@@ -22,7 +22,6 @@ type Step string
 
 const (
 	stepLockToChat      Step = "lock_to_chat"
-	stepMode            Step = "mode"
 	stepPlatforms       Step = "platforms"
 	stepXMethod         Step = "x_method"
 	stepXClientID       Step = "x_client_id"
@@ -34,8 +33,6 @@ const (
 	stepAgentEnable     Step = "agent_enable"
 	stepAgentURL        Step = "agent_url"
 	stepAgentSecret     Step = "agent_secret"
-	stepN8NWebhookURL   Step = "n8n_url"
-	stepN8NSharedSecret Step = "n8n_secret"
 	stepDone            Step = "done"
 )
 
@@ -155,8 +152,6 @@ func (w *Wizard) reprompt(tg *telegram.Client) (bool, store.Config, error) {
 	case stepLockToChat:
 		w.promptStart(tg)
 		return false, store.Config{}, nil
-	case stepMode:
-		return w.promptMode(tg)
 	case stepPlatforms:
 		return w.promptPlatforms(tg)
 	case stepXMethod:
@@ -177,10 +172,6 @@ func (w *Wizard) reprompt(tg *telegram.Client) (bool, store.Config, error) {
 		return w.promptAgentURL(tg)
 	case stepAgentSecret:
 		return w.promptAgentSecret(tg)
-	case stepN8NWebhookURL:
-		return w.promptN8NURL(tg)
-	case stepN8NSharedSecret:
-		return w.promptN8NSecret(tg)
 	default:
 		return false, store.Config{}, nil
 	}
@@ -237,23 +228,8 @@ func (w *Wizard) HandleText(ctx context.Context, tg *telegram.Client, text strin
 		} else {
 			w.Draft.AllowedChatID = 0
 		}
-		w.pushStep(stepMode)
-		return w.promptMode(tg)
-
-	case stepMode:
-		switch normalizeChoice(text) {
-		case "1", "direct":
-			w.Draft.Mode = store.ModeDirect
-			w.pushStep(stepPlatforms)
-			return w.promptPlatforms(tg)
-		case "2", "n8n":
-			w.Draft.Mode = store.ModeN8N
-			w.pushStep(stepN8NWebhookURL)
-			return w.promptN8NURL(tg)
-		default:
-			_, _ = tg.SendText(w.ChatID, "Reply with: 1 (Direct) or 2 (n8n)")
-			return false, store.Config{}, nil
-		}
+		w.pushStep(stepPlatforms)
+		return w.promptPlatforms(tg)
 
 	case stepPlatforms:
 		switch normalizeChoice(text) {
@@ -463,50 +439,9 @@ func (w *Wizard) HandleText(ctx context.Context, tg *telegram.Client, text strin
 		_, _ = tg.SendHTMLRemoveKeyboard(w.ChatID, msg)
 		return true, w.Draft, nil
 
-	case stepN8NWebhookURL:
-		u, perr := url.Parse(text)
-		if perr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			_, _ = tg.SendText(w.ChatID, "Invalid URL. Example: http://your-vps-ip:5678/webhook/postxlinkedin\nSend again, \u2b05\ufe0f Back, or /cancel.")
-			return false, store.Config{}, nil
-		}
-		w.Draft.N8NWebhookURL = text
-		w.pushStep(stepN8NSharedSecret)
-		return w.promptN8NSecret(tg)
-
-	case stepN8NSharedSecret:
-		if normalizeChoice(text) == "generate" {
-			sec, _ := generateSecret(32)
-			w.Draft.N8NSharedSecret = sec
-		} else if strings.Contains(strings.ToLower(text), "paste") {
-			_, _ = tg.SendText(w.ChatID, "Paste your secret now, or reply Generate.")
-			return false, store.Config{}, nil
-		} else {
-			w.Draft.N8NSharedSecret = text
-		}
-		w.Draft.N8NSecretEnabled = w.Draft.N8NSharedSecret != ""
-		w.Step = stepDone
-		msg := "\u2705 <b>Setup complete!</b>\n\nIn your n8n workflow, verify header <code>X-PostXLinkedIn-Secret</code> matches your secret.\n\n\U0001f4f8 Send a photo with caption to post!"
-		if w.Draft.N8NSharedSecret != "" {
-			msg += "\n\nYour n8n secret:\n<code>" + w.Draft.N8NSharedSecret + "</code>"
-		}
-		_, _ = tg.SendHTMLRemoveKeyboard(w.ChatID, msg)
-		return true, w.Draft, nil
-
 	default:
 		return false, store.Config{}, nil
 	}
-}
-
-func (w *Wizard) promptMode(tg *telegram.Client) (bool, store.Config, error) {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("1) Direct (recommended)")),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("2) n8n webhook")),
-		tgbotapi.NewKeyboardButtonRow(backRow()),
-	)
-	kb.OneTimeKeyboard = true
-	kb.ResizeKeyboard = true
-	_, _ = tg.SendHTMLWithKeyboard(w.ChatID, "\U0001f4e1 <b>Choose posting mode:</b>\n\n<b>1) Direct</b> \u2014 bot posts to X + LinkedIn via their APIs\n<b>2) n8n webhook</b> \u2014 bot sends data to n8n, which handles posting\n\n<i>Direct is simpler. Use n8n only if you have an n8n workflow set up.</i>", kb)
-	return false, store.Config{}, nil
 }
 
 func (w *Wizard) promptPlatforms(tg *telegram.Client) (bool, store.Config, error) {
@@ -753,37 +688,6 @@ func (w *Wizard) promptAgentSecret(tg *telegram.Client) (bool, store.Config, err
 	kb.OneTimeKeyboard = true
 	kb.ResizeKeyboard = true
 	_, _ = tg.SendHTMLWithKeyboard(w.ChatID, "\U0001f510 <b>Agent Shared Secret</b>\n\nProtects your webhook from unauthorized calls.\n\n\u2022 <b>Generate</b> \u2014 auto-create a secure secret\n\u2022 <b>Skip</b> \u2014 no secret (not recommended)\n\u2022 Or paste your own secret", kb)
-	return false, store.Config{}, nil
-}
-
-func (w *Wizard) promptN8NURL(tg *telegram.Client) (bool, store.Config, error) {
-	msg := "\U0001f517 <b>n8n Webhook URL</b>\n" +
-		"\n" +
-		"Send the webhook URL from your n8n workflow.\n" +
-		"\n" +
-		"Example: <code>http://your-vps:5678/webhook/postxlinkedin</code>\n" +
-		"\n" +
-		"\U0001f4d6 <a href=\"https://docs.n8n.io/integrations/builtin/core-nodes/n8n-nodes-base.webhook/\">n8n Webhook Docs</a>\n" +
-		"\n" +
-		"Paste the URL below, \u2b05\ufe0f Back, or /cancel."
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(backRow()),
-	)
-	kb.OneTimeKeyboard = true
-	kb.ResizeKeyboard = true
-	_, _ = tg.SendHTMLWithKeyboard(w.ChatID, msg, kb)
-	return false, store.Config{}, nil
-}
-
-func (w *Wizard) promptN8NSecret(tg *telegram.Client) (bool, store.Config, error) {
-	kb := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("Generate")),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("I'll paste my own")),
-		tgbotapi.NewKeyboardButtonRow(backRow()),
-	)
-	kb.OneTimeKeyboard = true
-	kb.ResizeKeyboard = true
-	_, _ = tg.SendHTMLWithKeyboard(w.ChatID, "\U0001f510 <b>n8n Shared Secret</b>\n\nSecures the webhook. In your n8n workflow, verify the header <code>X-PostXLinkedIn-Secret</code> matches this value.\n\n\u2022 <b>Generate</b> \u2014 auto-create a secure secret\n\u2022 Or paste your own", kb)
 	return false, store.Config{}, nil
 }
 

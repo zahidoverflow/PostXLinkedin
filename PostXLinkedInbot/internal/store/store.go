@@ -12,7 +12,6 @@ type Mode string
 
 const (
 	ModeDirect Mode = "direct"
-	ModeN8N    Mode = "n8n"
 )
 
 type Config struct {
@@ -24,15 +23,10 @@ type Config struct {
 	EnableLinkedIn bool `json:"enable_linkedin"`
 
 	// Optional "AI agent" webhook to transform caption (hashtags, formatting, etc).
-	// This lets you plug in n8n/LangChain/anything without hardcoding a vendor.
+	// This lets you plug in LangChain/anything without hardcoding a vendor.
 	AgentWebhookURL    string `json:"agent_webhook_url,omitempty"`
 	AgentSharedSecret  string `json:"agent_shared_secret,omitempty"`
 	AgentSecretEnabled bool   `json:"agent_secret_enabled,omitempty"`
-
-	// n8n mode
-	N8NWebhookURL    string `json:"n8n_webhook_url,omitempty"`
-	N8NSharedSecret  string `json:"n8n_shared_secret,omitempty"`
-	N8NSecretEnabled bool   `json:"n8n_secret_enabled,omitempty"`
 
 	// direct mode
 	XUserBearerToken string `json:"x_user_bearer_token,omitempty"`
