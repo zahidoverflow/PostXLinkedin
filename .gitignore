@@ -1,0 +1,40 @@
+# ─── Secrets & credentials ────────────────────────────────────
+.env
+.env.*
+!.env.example
+PostXLinkedInbot/.env
+PostXLinkedInbot/.env.*
+PostXLinkedInbot/data/config.json
+PostXLinkedInbot/data/config.json.tmp
+
+# ─── Build artifacts ──────────────────────────────────────────
+postxlinkedinbot
+postxlinkedinbot.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+dist/
+bin/
+
+# ─── Go ──────────────────────────────────────────────────────
+vendor/
+go.work
+go.work.sum
+
+# ─── IDE / editor ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── n8n ──────────────────────────────────────────────────────
+n8n/.n8n/
+n8n/workflows/*.json
+!n8n/workflows/README.md

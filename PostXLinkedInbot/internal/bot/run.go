@@ -292,6 +292,10 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		}
 	}
 
+	caption := postText
+	// Sanitize newlines: remove carriage returns to avoid truncation issues on some platforms.
+	caption = strings.ReplaceAll(caption, "\r", "")
+
 	// Mode 1: n8n webhook (only supports image posts).
 	if n8 != nil {
 		if dl == nil {
@@ -301,7 +305,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		_, _ = tg.SendText(chatID, "\u23f3 Posting via n8n...")
 
 		req := n8n.PostRequest{
-			Caption:       postText,
+			Caption:       caption,
 			ImageBase64:   dl.Base64,
 			ImageMIME:     dl.MIME,
 			ImageFilename: dl.Filename,
@@ -335,7 +339,6 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	var results []string
 	var errs []string
 
-	caption := postText
 	// Optional agent step: rewrite caption before posting.
 	if cfg.AgentWebhookURL != "" {
 		targets := []string{}
@@ -353,7 +356,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 			if newCaption != caption {
 				_, _ = tg.SendText(chatID, "\U0001f916 Caption rewritten by agent.")
 			}
-			caption = newCaption
+			caption = strings.ReplaceAll(newCaption, "\r", "")
 		}
 	}
 

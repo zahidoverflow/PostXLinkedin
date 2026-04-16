@@ -101,7 +101,7 @@ type createPostReq struct {
 func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption string, imageURN string, title string) (string, error) {
 	reqBody := createPostReq{
 		Author:     authorURN,
-		Commentary: caption,
+		Commentary: sanitizeCommentary(caption),
 		Visibility: "PUBLIC",
 		Distribution: map[string]any{
 			"feedDistribution":               "MAIN_FEED",
@@ -156,7 +156,7 @@ func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption 
 func (c *Client) CreateTextPost(ctx context.Context, authorURN string, text string) (string, error) {
 	reqBody := createPostReq{
 		Author:     authorURN,
-		Commentary: text,
+		Commentary: sanitizeCommentary(text),
 		Visibility: "PUBLIC",
 		Distribution: map[string]any{
 			"feedDistribution":               "MAIN_FEED",
@@ -189,6 +189,25 @@ func (c *Client) CreateTextPost(ctx context.Context, authorURN string, text stri
 		return id, nil
 	}
 	return "ok", nil
+}
+
+func sanitizeCommentary(s string) string {
+	// LinkedIn's commentary field supports a specialized Markdown syntax.
+	// Reserved characters must be escaped with a backslash to be treated as literals.
+	// We escape the most common syntax characters that can break the parser.
+	r := strings.NewReplacer(
+		"\\", "\\\\",
+		"|", "\\|",
+		"(", "\\(",
+		")", "\\)",
+		"[", "\\[",
+		"]", "\\]",
+		"{", "\\{",
+		"}", "\\}",
+		"<", "\\<",
+		">", "\\>",
+	)
+	return r.Replace(s)
 }
 
 func (c *Client) addHeaders(req *http.Request) {

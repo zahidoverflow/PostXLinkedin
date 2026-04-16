@@ -29,6 +29,57 @@
 
 ---
 
+## 🚀 Beginner's Quick Start (VPS / Linux Mint)
+
+If you have a VPS or a Linux machine (like Mint or Ubuntu), follow these simple steps to get the bot running permanently in the background.
+
+### Step 1: Get your Telegram Token
+1. Message [@BotFather](https://t.me/BotFather) on Telegram.
+2. Send `/newbot` and follow the instructions.
+3. **Copy the API Token** it gives you (looks like `123456:ABC-DEF...`).
+
+### Step 2: One-Click Setup
+Open your terminal and paste these commands one by one:
+
+```bash
+# 1. Download the code
+git clone https://github.com/zahidoverflow/PostXLinkedin.git
+cd PostXLinkedin/PostXLinkedInbot
+
+# 2. Run the automatic installer
+sudo ./scripts/vps/install.sh
+```
+
+### Step 3: Add your Token
+The installer created a configuration file for you. Now you need to add your Telegram token to it:
+1. Open the file: `sudo nano /opt/PostXLinkedin/PostXLinkedInbot/.env`
+2. Find the line `TELEGRAM_BOT_TOKEN=...` and paste your token there.
+3. Press `Ctrl + O`, then `Enter` to save, and `Ctrl + X` to exit.
+
+### Step 4: Start the Bot
+Run this command to start your bot and make sure it stays running even if your computer restarts:
+```bash
+sudo systemctl start postxlinkedinbot
+```
+
+### Step 5: Finalize in Telegram
+Go to your bot in Telegram and send `/start`. The interactive wizard will walk you through connecting your X (Twitter) and LinkedIn accounts!
+
+---
+
+## 🛠 Managing your Bot (Useful Commands)
+
+Since the bot is installed as a **systemd service** (a program that runs silently in the background), you use these commands to manage it:
+
+| Task | Command |
+|------|---------|
+| **Check if it's running** | `sudo systemctl status postxlinkedinbot` |
+| **Stop the bot** | `sudo systemctl stop postxlinkedinbot` |
+| **Restart the bot** | `sudo systemctl restart postxlinkedinbot` |
+| **See live activity/logs** | `sudo journalctl -u postxlinkedinbot -f` |
+
+---
+
 ## Architecture
 
 ```
