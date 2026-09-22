@@ -12,6 +12,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/agent"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/linkedin"
+	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/opengraph"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/setup"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/store"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/telegram"
@@ -346,12 +347,22 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	}
 
 	linkURL := ""
+	var linkMeta *opengraph.Metadata
 	if dl == nil {
 		entities := msg.Entities
 		if len(entities) == 0 && len(msg.CaptionEntities) > 0 {
 			entities = msg.CaptionEntities
 		}
 		linkURL = ExtractFirstURL(caption, entities)
+		if linkURL != "" {
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 8*time.Second)
+			if m, err := opengraph.Fetch(fetchCtx, httpClient, linkURL); err == nil {
+				linkMeta = m
+			} else {
+				logger.Printf("OpenGraph fetch failed for %s: %v", linkURL, err)
+			}
+			fetchCancel()
+		}
 	}
 
 	if cfg.EnableX && cfg.XUserBearerToken != "" {
@@ -488,8 +499,40 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		} else {
 			// Text or rich link preview post.
 			if linkURL != "" {
-				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, "", ""); err == nil {
-					results = append(results, "\u2705 LinkedIn: posted with link preview (ID: "+postID+")")
+				articleTitle := ""
+				articleDesc := ""
+				thumbnailURN := ""
+
+				if linkMeta != nil {
+					articleTitle = linkMeta.Title
+					articleDesc = linkMeta.Description
+
+					if linkMeta.ImageURL != "" {
+						_, _ = tg.SendText(chatID, "\u23f3 Fetching link preview image...")
+						imgCtx, imgCancel := context.WithTimeout(ctx, 10*time.Second)
+						imgBytes, mimeType, err := opengraph.FetchImage(imgCtx, httpClient, linkMeta.ImageURL, 10<<20)
+						imgCancel()
+						if err != nil {
+							logger.Printf("failed to download preview image from %s: %v", linkMeta.ImageURL, err)
+						} else {
+							uploadURL, imgURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
+							if err != nil {
+								logger.Printf("failed to init LinkedIn thumbnail upload: %v", err)
+							} else if err := liClient.UploadImageBytes(ctx, uploadURL, mimeType, imgBytes); err != nil {
+								logger.Printf("failed to upload LinkedIn thumbnail image: %v", err)
+							} else {
+								thumbnailURN = imgURN
+							}
+						}
+					}
+				}
+
+				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, articleTitle, articleDesc, thumbnailURN); err == nil {
+					if thumbnailURN != "" {
+						results = append(results, "\u2705 LinkedIn: posted with rich preview & thumbnail (ID: "+postID+")")
+					} else {
+						results = append(results, "\u2705 LinkedIn: posted with link preview (ID: "+postID+")")
+					}
 				} else {
 					logger.Printf("LinkedIn article post failed (%v), falling back to text post", err)
 					if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {

@@ -161,7 +161,7 @@ func TestLinkedInArticlePost(t *testing.T) {
 	client.SetBaseURL(srv.URL)
 
 	ctx := context.Background()
-	postID, err := client.CreateArticlePost(ctx, "urn:li:person:zahid", "Check out this link!", "https://example.com/blog", "", "")
+	postID, err := client.CreateArticlePost(ctx, "urn:li:person:zahid", "Check out this link!", "https://example.com/blog", "Article Title", "Description", "urn:li:image:thumb123")
 	if err != nil {
 		t.Fatalf("CreateArticlePost failed: %v", err)
 	}
@@ -179,5 +179,11 @@ func TestLinkedInArticlePost(t *testing.T) {
 	}
 	if article["source"] != "https://example.com/blog" {
 		t.Errorf("expected source https://example.com/blog, got %v", article["source"])
+	}
+	if article["title"] != "Article Title" {
+		t.Errorf("expected title 'Article Title', got %v", article["title"])
+	}
+	if article["thumbnail"] != "urn:li:image:thumb123" {
+		t.Errorf("expected thumbnail 'urn:li:image:thumb123', got %v", article["thumbnail"])
 	}
 }

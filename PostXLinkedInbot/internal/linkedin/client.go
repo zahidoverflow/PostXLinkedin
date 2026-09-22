@@ -331,6 +331,17 @@ func sanitizeTitle(t string) string {
 	return t
 }
 
+func sanitizeDescription(d string) string {
+	d = strings.ReplaceAll(d, "\r", "")
+	d = strings.ReplaceAll(d, "\n", " ")
+	d = strings.TrimSpace(d)
+	runes := []rune(d)
+	if len(runes) > 400 {
+		d = string(runes[:397]) + "..."
+	}
+	return d
+}
+
 func (c *Client) createMediaPost(ctx context.Context, authorURN string, caption string, mediaURN string, title string) (string, error) {
 	reqBody := createPostReq{
 		Author:     authorURN,
@@ -449,6 +460,7 @@ type articleContent struct {
 	Source      string `json:"source"`
 	Title       string `json:"title,omitempty"`
 	Description string `json:"description,omitempty"`
+	Thumbnail   string `json:"thumbnail,omitempty"`
 }
 
 type createArticlePostReq struct {
@@ -464,7 +476,10 @@ type createArticlePostReq struct {
 }
 
 // CreateArticlePost posts a URL to LinkedIn, generating an interactive rich link preview card.
-func (c *Client) CreateArticlePost(ctx context.Context, authorURN string, caption string, articleURL string, title string, description string) (string, error) {
+func (c *Client) CreateArticlePost(ctx context.Context, authorURN string, caption string, articleURL string, title string, description string, thumbnailURN string) (string, error) {
+	if title == "" {
+		title = articleURL
+	}
 	reqBody := createArticlePostReq{
 		Author:     authorURN,
 		Commentary: sanitizeCommentary(caption),
@@ -480,7 +495,8 @@ func (c *Client) CreateArticlePost(ctx context.Context, authorURN string, captio
 			Article: articleContent{
 				Source:      articleURL,
 				Title:       sanitizeTitle(title),
-				Description: description,
+				Description: sanitizeDescription(description),
+				Thumbnail:   thumbnailURN,
 			},
 		},
 		LifecycleState:            "PUBLISHED",
