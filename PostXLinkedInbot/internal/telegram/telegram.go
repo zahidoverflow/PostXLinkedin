@@ -60,6 +60,11 @@ func (c *Client) SendHTMLRemoveKeyboard(chatID int64, html string) (tgbotapi.Mes
 	return c.bot.Send(m)
 }
 
+func (c *Client) DeleteMessage(chatID int64, messageID int) error {
+	_, err := c.bot.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
+	return err
+}
+
 type DownloadedFile struct {
 	Bytes    []byte
 	Base64   string

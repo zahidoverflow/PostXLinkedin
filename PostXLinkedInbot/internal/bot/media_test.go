@@ -221,3 +221,33 @@ func TestExtractFirstURL(t *testing.T) {
 		})
 	}
 }
+
+func TestFormatPostURLs(t *testing.T) {
+	// LinkedIn post URLs
+	if got := FormatLinkedInPostURL("urn:li:ugcPost:7484167400423071744"); got != "https://www.linkedin.com/feed/update/urn:li:ugcPost:7484167400423071744/" {
+		t.Errorf("unexpected linkedin URL: %s", got)
+	}
+	if got := FormatLinkedInPostURL("urn:li:share:123456/"); got != "https://www.linkedin.com/feed/update/urn:li:share:123456/" {
+		t.Errorf("unexpected linkedin URL: %s", got)
+	}
+	if got := FormatLinkedInPostURL("99999999"); got != "https://www.linkedin.com/feed/update/urn:li:activity:99999999/" {
+		t.Errorf("unexpected linkedin URL: %s", got)
+	}
+	if got := FormatLinkedInPostURL(""); got != "" {
+		t.Errorf("expected empty for empty post ID, got %s", got)
+	}
+	if got := FormatLinkedInPostURL("ok"); got != "" {
+		t.Errorf("expected empty for 'ok', got %s", got)
+	}
+
+	// X post URLs
+	if got := FormatXPostURL("1771234567890"); got != "https://x.com/i/status/1771234567890" {
+		t.Errorf("unexpected X URL: %s", got)
+	}
+	if got := FormatXPostURL(""); got != "" {
+		t.Errorf("expected empty for empty tweet ID, got %s", got)
+	}
+	if got := FormatXPostURL("ok"); got != "" {
+		t.Errorf("expected empty for 'ok', got %s", got)
+	}
+}

@@ -219,3 +219,24 @@ func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
 	}
 	return ""
 }
+
+// FormatLinkedInPostURL builds a web URL for a published LinkedIn post URN or ID.
+func FormatLinkedInPostURL(postID string) string {
+	postID = strings.TrimSpace(postID)
+	if postID == "" || postID == "ok" {
+		return ""
+	}
+	if strings.HasPrefix(postID, "urn:li:") {
+		return "https://www.linkedin.com/feed/update/" + strings.TrimRight(postID, "/") + "/"
+	}
+	return "https://www.linkedin.com/feed/update/urn:li:activity:" + strings.TrimRight(postID, "/") + "/"
+}
+
+// FormatXPostURL builds a web URL for a published tweet ID.
+func FormatXPostURL(tweetID string) string {
+	tweetID = strings.TrimSpace(tweetID)
+	if tweetID == "" || tweetID == "ok" {
+		return ""
+	}
+	return "https://x.com/i/status/" + tweetID
+}

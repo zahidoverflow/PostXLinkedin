@@ -283,6 +283,20 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		return nil
 	}
 
+	var progressMsgIDs []int
+	sendProgress := func(text string) {
+		if m, err := tg.SendText(chatID, text); err == nil {
+			progressMsgIDs = append(progressMsgIDs, m.MessageID)
+		}
+	}
+	deleteProgress := func() {
+		for _, id := range progressMsgIDs {
+			_ = tg.DeleteMessage(chatID, id)
+		}
+		progressMsgIDs = nil
+	}
+	defer deleteProgress()
+
 	var dl *telegram.DownloadedFile
 	if inbound != nil {
 		if cfg.Debug {
@@ -290,10 +304,11 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				inbound.Category, chatID, inbound.FileID, inbound.Filename, inbound.FileSize, len(postText))
 		}
 
-		_, _ = tg.SendText(chatID, fmt.Sprintf("\u23f3 Downloading %s...", inbound.Category))
+		sendProgress(fmt.Sprintf("\u23f3 Downloading %s...", inbound.Category))
 
 		d, err := tg.DownloadMedia(ctx, inbound.FileID, inbound.Filename, inbound.MIME)
 		if err != nil {
+			deleteProgress()
 			_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
 			return err
 		}
@@ -306,6 +321,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		}
 
 		if int64(len(d.Bytes)) > maxBytes {
+			deleteProgress()
 			_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c File too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing.", len(d.Bytes), maxBytes))
 			return errors.New("file too large")
 		}
@@ -322,7 +338,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 
 	// Mode: direct API calls to X + LinkedIn.
 	httpClient := &http.Client{Timeout: 60 * time.Second}
-	var results []string
+	var postURLs []string
 	var errs []string
 
 	// Optional agent step: rewrite caption before posting.
@@ -366,7 +382,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	}
 
 	if cfg.EnableX && cfg.XUserBearerToken != "" {
-		_, _ = tg.SendText(chatID, "\u23f3 Posting to X...")
+		sendProgress("\u23f3 Posting to X...")
 
 		// Auto-refresh X token if we have credentials.
 		if cfg.XRefreshToken != "" && cfg.XClientID != "" && cfg.XClientSecret != "" {
@@ -398,7 +414,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 						errs = append(errs, xAuthHint)
 					}
 				} else {
-					results = append(results, "\u2705 X: posted image (ID: "+tweetID+")")
+					if u := FormatXPostURL(tweetID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				}
 			}
 		} else if dl != nil && inbound.Category == MediaCategoryDocument {
@@ -409,24 +427,32 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					errs = append(errs, xAuthHint)
 				}
 			} else {
-				results = append(results, "\u2705 X: posted text (ID: "+tweetID+") [Note: documents attach on LinkedIn]")
+				if u := FormatXPostURL(tweetID); u != "" {
+					postURLs = append(postURLs, u)
+				}
 			}
 		} else if dl != nil && inbound.Category == MediaCategoryVideo {
 			// Attempt media upload or fallback to text.
 			mediaID, err := xClient.UploadMedia(ctx, dl.Base64, dl.MIME)
 			if err == nil {
 				if tweetID, err := xClient.CreatePost(ctx, xText, []string{mediaID}); err == nil {
-					results = append(results, "\u2705 X: posted video (ID: "+tweetID+")")
+					if u := FormatXPostURL(tweetID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				} else {
 					if tweetID, terr := xClient.CreatePost(ctx, xText, nil); terr == nil {
-						results = append(results, "\u2705 X: posted text (ID: "+tweetID+")")
+						if u := FormatXPostURL(tweetID); u != "" {
+							postURLs = append(postURLs, u)
+						}
 					} else {
 						errs = append(errs, "X post: "+err.Error())
 					}
 				}
 			} else {
 				if tweetID, terr := xClient.CreatePost(ctx, xText, nil); terr == nil {
-					results = append(results, "\u2705 X: posted text (ID: "+tweetID+")")
+					if u := FormatXPostURL(tweetID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				} else {
 					errs = append(errs, "X upload: "+err.Error())
 				}
@@ -439,17 +465,15 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					errs = append(errs, xAuthHint)
 				}
 			} else {
-				if linkURL != "" {
-					results = append(results, "\u2705 X: posted with link preview (ID: "+tweetID+")")
-				} else {
-					results = append(results, "\u2705 X: posted (ID: "+tweetID+")")
+				if u := FormatXPostURL(tweetID); u != "" {
+					postURLs = append(postURLs, u)
 				}
 			}
 		}
 	}
 
 	if cfg.EnableLinkedIn && cfg.LinkedInAccessToken != "" && cfg.LinkedInAuthorURN != "" {
-		_, _ = tg.SendText(chatID, "\u23f3 Posting to LinkedIn...")
+		sendProgress("\u23f3 Posting to LinkedIn...")
 
 		liClient := linkedin.New(httpClient, cfg.LinkedInAccessToken, cfg.LinkedInVersion)
 
@@ -464,7 +488,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				} else if postID, err := liClient.CreateImagePost(ctx, cfg.LinkedInAuthorURN, caption, imageURN, dl.Filename); err != nil {
 					errs = append(errs, "LinkedIn post: "+err.Error())
 				} else {
-					results = append(results, "\u2705 LinkedIn: posted image (ID: "+postID+")")
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				}
 
 			case MediaCategoryDocument:
@@ -476,7 +502,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				} else if postID, err := liClient.CreateDocumentPost(ctx, cfg.LinkedInAuthorURN, caption, docURN, dl.Filename); err != nil {
 					errs = append(errs, "LinkedIn doc post: "+err.Error())
 				} else {
-					results = append(results, "\u2705 LinkedIn: posted document (ID: "+postID+")")
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				}
 
 			case MediaCategoryVideo:
@@ -490,7 +518,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				} else if postID, err := liClient.CreateVideoPost(ctx, cfg.LinkedInAuthorURN, caption, videoURN, dl.Filename); err != nil {
 					errs = append(errs, "LinkedIn video post: "+err.Error())
 				} else {
-					results = append(results, "\u2705 LinkedIn: posted video (ID: "+postID+")")
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				}
 
 			default:
@@ -508,7 +538,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					articleDesc = linkMeta.Description
 
 					if linkMeta.ImageURL != "" {
-						_, _ = tg.SendText(chatID, "\u23f3 Fetching link preview image...")
+						sendProgress("\u23f3 Fetching link preview image...")
 						imgCtx, imgCancel := context.WithTimeout(ctx, 10*time.Second)
 						imgBytes, mimeType, err := opengraph.FetchImage(imgCtx, httpClient, linkMeta.ImageURL, 10<<20)
 						imgCancel()
@@ -528,40 +558,44 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				}
 
 				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, articleTitle, articleDesc, thumbnailURN); err == nil {
-					if thumbnailURN != "" {
-						results = append(results, "\u2705 LinkedIn: posted with rich preview & thumbnail (ID: "+postID+")")
-					} else {
-						results = append(results, "\u2705 LinkedIn: posted with link preview (ID: "+postID+")")
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
 					}
 				} else {
 					logger.Printf("LinkedIn article post failed (%v), falling back to text post", err)
 					if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {
 						errs = append(errs, fmt.Sprintf("LinkedIn post failed (article: %v; fallback: %v)", err, terr))
 					} else {
-						results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+						if u := FormatLinkedInPostURL(postID); u != "" {
+							postURLs = append(postURLs, u)
+						}
 					}
 				}
 			} else {
 				if postID, err := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); err != nil {
 					errs = append(errs, "LinkedIn post: "+err.Error())
 				} else {
-					results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
+					}
 				}
 			}
 		}
 	}
 
+	deleteProgress()
+
 	// Build summary message.
 	var summary strings.Builder
-	if len(results) > 0 && len(errs) == 0 {
+	if len(postURLs) > 0 && len(errs) == 0 {
 		summary.WriteString("\u2705 <b>Posted successfully!</b>\n\n")
-		for _, r := range results {
-			summary.WriteString(r + "\n")
+		for _, u := range postURLs {
+			summary.WriteString(u + "\n")
 		}
-	} else if len(results) > 0 && len(errs) > 0 {
+	} else if len(postURLs) > 0 && len(errs) > 0 {
 		summary.WriteString("\u26a0\ufe0f <b>Partially posted:</b>\n\n")
-		for _, r := range results {
-			summary.WriteString(r + "\n")
+		for _, u := range postURLs {
+			summary.WriteString(u + "\n")
 		}
 		summary.WriteString("\n<b>Errors:</b>\n")
 		for _, e := range errs {
