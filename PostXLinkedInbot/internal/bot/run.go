@@ -345,6 +345,15 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		}
 	}
 
+	linkURL := ""
+	if dl == nil {
+		entities := msg.Entities
+		if len(entities) == 0 && len(msg.CaptionEntities) > 0 {
+			entities = msg.CaptionEntities
+		}
+		linkURL = ExtractFirstURL(caption, entities)
+	}
+
 	if cfg.EnableX && cfg.XUserBearerToken != "" {
 		_, _ = tg.SendText(chatID, "\u23f3 Posting to X...")
 
@@ -412,14 +421,18 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				}
 			}
 		} else {
-			// Text-only post.
+			// Text-only or link-preview post.
 			if tweetID, err := xClient.CreatePost(ctx, xText, nil); err != nil {
 				errs = append(errs, "X post: "+err.Error())
 				if isXAuthError(err) {
 					errs = append(errs, xAuthHint)
 				}
 			} else {
-				results = append(results, "\u2705 X: posted (ID: "+tweetID+")")
+				if linkURL != "" {
+					results = append(results, "\u2705 X: posted with link preview (ID: "+tweetID+")")
+				} else {
+					results = append(results, "\u2705 X: posted (ID: "+tweetID+")")
+				}
 			}
 		}
 	}
@@ -473,11 +486,24 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				errs = append(errs, "LinkedIn: unsupported media category")
 			}
 		} else {
-			// Text-only post.
-			if postID, err := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); err != nil {
-				errs = append(errs, "LinkedIn post: "+err.Error())
+			// Text or rich link preview post.
+			if linkURL != "" {
+				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, "", ""); err == nil {
+					results = append(results, "\u2705 LinkedIn: posted with link preview (ID: "+postID+")")
+				} else {
+					logger.Printf("LinkedIn article post failed (%v), falling back to text post", err)
+					if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {
+						errs = append(errs, fmt.Sprintf("LinkedIn post failed (article: %v; fallback: %v)", err, terr))
+					} else {
+						results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+					}
+				}
 			} else {
-				results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+				if postID, err := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); err != nil {
+					errs = append(errs, "LinkedIn post: "+err.Error())
+				} else {
+					results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+				}
 			}
 		}
 	}

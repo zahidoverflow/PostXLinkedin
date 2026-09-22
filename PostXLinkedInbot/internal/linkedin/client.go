@@ -445,6 +445,80 @@ func (c *Client) CreateTextPost(ctx context.Context, authorURN string, text stri
 	return "ok", nil
 }
 
+type articleContent struct {
+	Source      string `json:"source"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+type createArticlePostReq struct {
+	Author       string `json:"author"`
+	Commentary   string `json:"commentary"`
+	Visibility   string `json:"visibility"`
+	Distribution any    `json:"distribution,omitempty"`
+	Content      *struct {
+		Article articleContent `json:"article"`
+	} `json:"content,omitempty"`
+	LifecycleState            string `json:"lifecycleState,omitempty"`
+	IsReshareDisabledByAuthor bool   `json:"isReshareDisabledByAuthor,omitempty"`
+}
+
+// CreateArticlePost posts a URL to LinkedIn, generating an interactive rich link preview card.
+func (c *Client) CreateArticlePost(ctx context.Context, authorURN string, caption string, articleURL string, title string, description string) (string, error) {
+	reqBody := createArticlePostReq{
+		Author:     authorURN,
+		Commentary: sanitizeCommentary(caption),
+		Visibility: "PUBLIC",
+		Distribution: map[string]any{
+			"feedDistribution":               "MAIN_FEED",
+			"targetEntities":                 []any{},
+			"thirdPartyDistributionChannels": []any{},
+		},
+		Content: &struct {
+			Article articleContent `json:"article"`
+		}{
+			Article: articleContent{
+				Source:      articleURL,
+				Title:       sanitizeTitle(title),
+				Description: description,
+			},
+		},
+		LifecycleState:            "PUBLISHED",
+		IsReshareDisabledByAuthor: false,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint("/rest/posts"), bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	c.addHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := readSmall(res.Body, 12<<10)
+		return "", fmt.Errorf("linkedin create article post failed: %s: %s", res.Status, body)
+	}
+
+	if id := res.Header.Get("x-restli-id"); id != "" {
+		return id, nil
+	}
+	var pr struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&pr)
+	if pr.ID != "" {
+		return pr.ID, nil
+	}
+	return "ok", nil
+}
+
 func sanitizeCommentary(s string) string {
 	// LinkedIn's commentary field supports a specialized Markdown syntax.
 	// Reserved characters must be escaped with a backslash to be treated as literals.

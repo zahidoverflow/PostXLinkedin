@@ -2,7 +2,9 @@ package bot
 
 import (
 	"path/filepath"
+	"regexp"
 	"strings"
+	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/telegram"
@@ -187,4 +189,33 @@ func ExtractInboundMedia(msg *tgbotapi.Message) *InboundMedia {
 		}
 	}
 	return nil
+}
+
+var urlRegex = regexp.MustCompile(`https?://[^\s<>"'{}|\\^` + "`" + `]+`)
+
+// ExtractFirstURL extracts the first valid HTTP or HTTPS URL from a message
+// using Telegram entities if available, falling back to regex.
+func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
+	u16 := utf16.Encode([]rune(text))
+	for _, ent := range entities {
+		if ent.Type == "text_link" && ent.URL != "" {
+			return ent.URL
+		}
+		if ent.Type == "url" {
+			start := ent.Offset
+			end := ent.Offset + ent.Length
+			if start >= 0 && end <= len(u16) && start < end {
+				u := string(utf16.Decode(u16[start:end]))
+				if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
+					return strings.TrimRight(u, ".,;:!?)>]}'")
+				}
+			}
+		}
+	}
+
+	u := urlRegex.FindString(text)
+	if u != "" {
+		return strings.TrimRight(u, ".,;:!?)>]}'")
+	}
+	return ""
 }

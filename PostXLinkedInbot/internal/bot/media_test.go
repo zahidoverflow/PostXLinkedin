@@ -162,3 +162,62 @@ func TestExtractInboundMedia(t *testing.T) {
 		t.Errorf("expected nil media for text message, got %+v", m)
 	}
 }
+
+func TestExtractFirstURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		entities []tgbotapi.MessageEntity
+		want     string
+	}{
+		{
+			name: "plain text with https url and punctuation",
+			text: "Check out this project: https://github.com/zahidoverflow/postxlinkedin.",
+			want: "https://github.com/zahidoverflow/postxlinkedin",
+		},
+		{
+			name: "plain text with http url in brackets",
+			text: "Link here: (http://example.com/page?ref=1&b=2)",
+			want: "http://example.com/page?ref=1&b=2",
+		},
+		{
+			name: "message with telegram url entity",
+			text: "Visit https://news.ycombinator.com today",
+			entities: []tgbotapi.MessageEntity{
+				{
+					Type:   "url",
+					Offset: 6,
+					Length: 28,
+				},
+			},
+			want: "https://news.ycombinator.com",
+		},
+		{
+			name: "message with telegram text_link entity",
+			text: "Read the full announcement here",
+			entities: []tgbotapi.MessageEntity{
+				{
+					Type:   "text_link",
+					Offset: 24,
+					Length: 4,
+					URL:    "https://blog.example.com/announcement",
+				},
+			},
+			want: "https://blog.example.com/announcement",
+		},
+		{
+			name: "text without any links",
+			text: "Just an ordinary status update without links",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractFirstURL(tt.text, tt.entities)
+			if got != tt.want {
+				t.Errorf("ExtractFirstURL(%q, entities) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
+	}
+}

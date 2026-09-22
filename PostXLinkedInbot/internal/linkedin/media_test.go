@@ -138,3 +138,46 @@ func TestLinkedInVideoUploadAndPost(t *testing.T) {
 		t.Fatalf("expected urn:li:share:video-post-1, got %s", postID)
 	}
 }
+
+func TestLinkedInArticlePost(t *testing.T) {
+	mux := http.NewServeMux()
+
+	var receivedBody map[string]any
+	mux.HandleFunc("/rest/posts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		w.Header().Set("x-restli-id", "urn:li:share:article-post-456")
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := New(srv.Client(), "test-token", "202601")
+	client.SetBaseURL(srv.URL)
+
+	ctx := context.Background()
+	postID, err := client.CreateArticlePost(ctx, "urn:li:person:zahid", "Check out this link!", "https://example.com/blog", "", "")
+	if err != nil {
+		t.Fatalf("CreateArticlePost failed: %v", err)
+	}
+	if postID != "urn:li:share:article-post-456" {
+		t.Fatalf("expected urn:li:share:article-post-456, got %s", postID)
+	}
+
+	content, ok := receivedBody["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing content in post payload: %+v", receivedBody)
+	}
+	article, ok := content["article"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing article in content: %+v", content)
+	}
+	if article["source"] != "https://example.com/blog" {
+		t.Errorf("expected source https://example.com/blog, got %v", article["source"])
+	}
+}
