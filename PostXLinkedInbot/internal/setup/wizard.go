@@ -21,25 +21,25 @@ import (
 type Step string
 
 const (
-	stepLockToChat      Step = "lock_to_chat"
-	stepPlatforms       Step = "platforms"
-	stepXMethod         Step = "x_method"
-	stepXClientID       Step = "x_client_id"
-	stepXClientSecret   Step = "x_client_secret"
-	stepXAuthCallback   Step = "x_auth_callback"
-	stepXToken          Step = "x_token"
-	stepLinkedInToken   Step = "li_token"
-	stepLinkedInAuthor  Step = "li_author"
-	stepAgentEnable     Step = "agent_enable"
-	stepAgentURL        Step = "agent_url"
-	stepAgentSecret     Step = "agent_secret"
-	stepDone            Step = "done"
+	stepLockToChat     Step = "lock_to_chat"
+	stepPlatforms      Step = "platforms"
+	stepXMethod        Step = "x_method"
+	stepXClientID      Step = "x_client_id"
+	stepXClientSecret  Step = "x_client_secret"
+	stepXAuthCallback  Step = "x_auth_callback"
+	stepXToken         Step = "x_token"
+	stepLinkedInToken  Step = "li_token"
+	stepLinkedInAuthor Step = "li_author"
+	stepAgentEnable    Step = "agent_enable"
+	stepAgentURL       Step = "agent_url"
+	stepAgentSecret    Step = "agent_secret"
+	stepDone           Step = "done"
 )
 
 type Wizard struct {
 	ChatID       int64
 	Step         Step
-	History      []Step          // stack for back-navigation
+	History      []Step // stack for back-navigation
 	Draft        store.Config
 	DetectedURN  string          // auto-detected LinkedIn URN from /userinfo
 	DetectedName string          // auto-detected LinkedIn display name

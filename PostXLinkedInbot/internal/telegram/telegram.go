@@ -79,6 +79,10 @@ func BestPhoto(photos []tgbotapi.PhotoSize) tgbotapi.PhotoSize {
 }
 
 func (c *Client) DownloadPhoto(ctx context.Context, fileID string) (DownloadedFile, error) {
+	return c.DownloadMedia(ctx, fileID, "", "")
+}
+
+func (c *Client) DownloadMedia(ctx context.Context, fileID string, preferredFilename string, preferredMIME string) (DownloadedFile, error) {
 	f, err := c.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
 	if err != nil {
 		return DownloadedFile{}, fmt.Errorf("getFile: %w", err)
@@ -103,24 +107,34 @@ func (c *Client) DownloadPhoto(ctx context.Context, fileID string) (DownloadedFi
 		return DownloadedFile{}, err
 	}
 
-	// Determine MIME: prefer Content-Type header, then extension, then byte sniffing.
-	m := strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0])
+	// Determine MIME: prefer preferredMIME if valid, then Content-Type header, then extension, then byte sniffing.
+	m := strings.TrimSpace(strings.Split(preferredMIME, ";")[0])
 	if m == "" || m == "application/octet-stream" {
-		if ext := path.Ext(f.FilePath); ext != "" {
+		m = strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0])
+	}
+	if m == "" || m == "application/octet-stream" {
+		targetPath := f.FilePath
+		if preferredFilename != "" {
+			targetPath = preferredFilename
+		}
+		if ext := path.Ext(targetPath); ext != "" {
 			if byExt := mime.TypeByExtension(ext); byExt != "" {
 				m = byExt
 			}
 		}
 	}
 	if m == "" || m == "application/octet-stream" {
-		// Sniff actual bytes — reliably detects JPEG, PNG, GIF, WebP, etc.
+		// Sniff actual bytes — reliably detects JPEG, PNG, GIF, WebP, PDF, etc.
 		m = http.DetectContentType(b)
 		m = strings.TrimSpace(strings.Split(m, ";")[0])
 	}
 
-	filename := path.Base(f.FilePath)
+	filename := preferredFilename
+	if filename == "" {
+		filename = path.Base(f.FilePath)
+	}
 	if filename == "" || filename == "." || filename == "/" {
-		filename = "photo"
+		filename = "media"
 	}
 
 	return DownloadedFile{

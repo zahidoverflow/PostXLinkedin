@@ -18,7 +18,7 @@ PostXLinkedIn allows you to maintain your social presence on X and LinkedIn from
 
 - **Interactive Setup** — Configure everything (tokens, platforms, IDs) via a step-by-step wizard in Telegram.
 - **Dual Posting** — Support for both X (Twitter) and LinkedIn from one message.
-- **Image & Text** — Support for high-quality image uploads or text-only posts.
+- **Media & Documents** — Support for images (JPG, PNG, GIF, WebP, HEIC), documents (PDF, DOC/DOCX, PPT/PPTX), videos (MP4, MOV, etc.), or text-only posts.
 - **Secure Auth** — Implements OAuth 2.0 PKCE (S256) for X; no manual token refreshing needed.
 - **AI Integration** — Optional "Agent" webhook to rewrite/optimize captions (hashtags, formatting) before posting.
 - **VPS Ready** — Includes systemd service files and automated install/update scripts.

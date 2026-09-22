@@ -13,7 +13,8 @@
 ## Highlights
 
 - **Zero-config files** — The entire setup runs inside Telegram via an interactive wizard.
-- **Dual platform posting** — X + LinkedIn from a single photo or text message.
+- **Dual platform posting** — X + LinkedIn from a single message.
+- **Rich Media & Document Support** — Images (JPG, PNG, GIF, WebP, HEIC), Documents (PDF, DOC/DOCX, PPT/PPTX, ODT, ODS), Videos (MP4, MOV, etc.), and text posts.
 - **OAuth 2.0 PKCE (S256)** — Secure X auth flow handled by the bot itself.
 - **Auto token refresh** — X tokens are refreshed transparently before every post.
 - **AI Agent webhook** — Optional hook to rewrite captions (hashtags, formatting, tone) via any HTTP endpoint.

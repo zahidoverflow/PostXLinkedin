@@ -130,12 +130,12 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 				w.Start(tg)
 				return nil
 			}
-			_, _ = tg.SendHTML(chatID, "\U0001f44b <b>PostXLinkedInBot is ready!</b>\n\n\U0001f4f8 Send a <b>photo with a caption</b> to post to your connected platforms.\n\U0001f4dd Or send a <b>text message</b> to post text-only.\n\nUse /help to see all commands.")
+			_, _ = tg.SendHTML(chatID, "\U0001f44b <b>PostXLinkedInBot is ready!</b>\n\n\U0001f4f8 Send a <b>photo, document, or video with caption</b> to post to your connected platforms.\n\U0001f4dd Or send a <b>text message</b> to post text-only.\n\nUse /help to see all commands.")
 			return nil
 		case "help":
 			help := "\U0001f4d6 <b>PostXLinkedInBot \u2014 Commands</b>\n\n" +
 				"\U0001f4f8 <b>Post content:</b>\n" +
-				"\u2022 Send a <b>photo with caption</b> \u2192 image post\n" +
+				"\u2022 Send a <b>photo, document (PDF/Word/PPT), or video with caption</b> \u2192 media post\n" +
 				"\u2022 Send a <b>text message</b> \u2192 text-only post\n\n" +
 				"\u2699\ufe0f <b>Configuration:</b>\n" +
 				"/setup \u2014 full setup wizard\n" +
@@ -238,46 +238,75 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		return nil
 	}
 
-	// Determine post type: photo+caption, caption-only photo, or text-only.
-	hasPhoto := len(msg.Photo) > 0
-	postText := msg.Text // text-only message
-	if hasPhoto {
-		postText = msg.Caption
-	}
-
-	// Reject unsupported media types.
-	if msg.Document != nil || msg.Video != nil || msg.Sticker != nil || msg.Voice != nil || msg.Audio != nil {
-		_, _ = tg.SendHTML(chatID, "\u274c Unsupported media type.\n\n\U0001f4f8 Send a <b>photo with caption</b> for an image post.\n\U0001f4dd Or send a <b>text message</b> for a text-only post.")
+	// Reject stickers and voice messages.
+	if msg.Sticker != nil || msg.Voice != nil {
+		_, _ = tg.SendHTML(chatID, "\u274c Unsupported media type.\n\n\U0001f4f8 Send a <b>photo, document (PDF/Word/PPT), or video with caption</b>.\n\U0001f4dd Or send a <b>text message</b> for a text-only post.")
 		return nil
 	}
 
-	if hasPhoto && postText == "" {
-		_, _ = tg.SendText(chatID, "Missing caption. Add a caption to your photo (this becomes the post text).")
+	// Extract inbound media if present.
+	inbound := ExtractInboundMedia(msg)
+	postText := msg.Text
+	if inbound != nil {
+		if msg.Caption != "" {
+			postText = msg.Caption
+		} else if msg.Text != "" {
+			postText = msg.Text
+		} else {
+			postText = ""
+		}
+	}
+
+	if inbound != nil && inbound.Category == MediaCategoryAudio {
+		_, _ = tg.SendHTML(chatID, "\u26a0\ufe0f LinkedIn API does not support direct audio feed posts (audio is supported only on profile work samples).\n\nTo share audio on LinkedIn, please convert it to a video (e.g. MP4) and send it with a caption.")
 		return nil
 	}
-	if !hasPhoto && postText == "" {
-		_, _ = tg.SendHTML(chatID, "\U0001f4f8 Send a <b>photo with caption</b> for an image post.\n\U0001f4dd Or send a <b>text message</b> for a text-only post.")
+
+	if inbound != nil && inbound.Category == MediaCategoryUnknown {
+		_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c Unsupported file type: <code>%s</code>\n\n<b>Supported on LinkedIn:</b>\n\u2022 <b>Images:</b> JPG, PNG, GIF, WebP, HEIC\n\u2022 <b>Documents:</b> PDF, DOC/DOCX, PPT/PPTX, ODT, ODS\n\u2022 <b>Videos:</b> MP4, MOV, AVI, WEBM, MKV", inbound.Filename))
+		return nil
+	}
+
+	isForwarded := msg.ForwardDate != 0 || msg.ForwardFrom != nil || msg.ForwardFromChat != nil || msg.ForwardSenderName != ""
+
+	if inbound != nil && strings.TrimSpace(postText) == "" {
+		if isForwarded {
+			_, _ = tg.SendHTML(chatID, "\u26a0\ufe0f <b>Forwarded media has no caption.</b>\n\nA caption is required for your post text.\n\n\U0001f449 <i>Tip: When forwarding in Telegram, tap the preview to add a comment before sending, or send the file directly with a caption.</i>")
+		} else {
+			_, _ = tg.SendText(chatID, "Missing caption. Add a caption to your media (this becomes the post text).")
+		}
+		return nil
+	}
+	if inbound == nil && strings.TrimSpace(postText) == "" {
+		_, _ = tg.SendHTML(chatID, "\U0001f4f8 Send or forward a <b>photo, document, or video with caption</b> for a media post.\n\U0001f4dd Or send a <b>text message</b> for a text-only post.")
 		return nil
 	}
 
 	var dl *telegram.DownloadedFile
-	if hasPhoto {
-		photo := telegram.BestPhoto(msg.Photo)
+	if inbound != nil {
 		if cfg.Debug {
-			logger.Printf("photo received: chat=%d file_id=%s size=%dx%d file_size=%d caption_len=%d",
-				chatID, photo.FileID, photo.Width, photo.Height, photo.FileSize, len(postText))
+			logger.Printf("%s received: chat=%d file_id=%s filename=%s size=%d caption_len=%d",
+				inbound.Category, chatID, inbound.FileID, inbound.Filename, inbound.FileSize, len(postText))
 		}
 
-		_, _ = tg.SendText(chatID, "\u23f3 Downloading image...")
+		_, _ = tg.SendText(chatID, fmt.Sprintf("\u23f3 Downloading %s...", inbound.Category))
 
-		d, err := tg.DownloadPhoto(ctx, photo.FileID)
+		d, err := tg.DownloadMedia(ctx, inbound.FileID, inbound.Filename, inbound.MIME)
 		if err != nil {
-			_, _ = tg.SendHTML(chatID, "\u274c Failed to download photo from Telegram. Try sending it again.")
+			_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
 			return err
 		}
-		if int64(len(d.Bytes)) > cfg.MaxImageBytes {
-			_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c Image too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing the image.", len(d.Bytes), cfg.MaxImageBytes))
-			return errors.New("image too large")
+
+		maxBytes := cfg.MaxImageBytes
+		if inbound.Category == MediaCategoryDocument || inbound.Category == MediaCategoryVideo {
+			if maxBytes < 20<<20 {
+				maxBytes = 20 << 20
+			}
+		}
+
+		if int64(len(d.Bytes)) > maxBytes {
+			_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c File too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing.", len(d.Bytes), maxBytes))
+			return errors.New("file too large")
 		}
 		dl = &d
 	} else {
@@ -334,7 +363,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 			xText = truncateRunes(xText, 277) + "..."
 		}
 
-		if dl != nil {
+		if dl != nil && inbound.Category == MediaCategoryImage {
 			// Image post.
 			mediaID, err := xClient.UploadMedia(ctx, dl.Base64, dl.MIME)
 			if err != nil {
@@ -349,7 +378,37 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 						errs = append(errs, xAuthHint)
 					}
 				} else {
-					results = append(results, "\u2705 X: posted (ID: "+tweetID+")")
+					results = append(results, "\u2705 X: posted image (ID: "+tweetID+")")
+				}
+			}
+		} else if dl != nil && inbound.Category == MediaCategoryDocument {
+			// X doesn't support documents as media attachments; post caption as text post.
+			if tweetID, err := xClient.CreatePost(ctx, xText, nil); err != nil {
+				errs = append(errs, "X post: "+err.Error())
+				if isXAuthError(err) {
+					errs = append(errs, xAuthHint)
+				}
+			} else {
+				results = append(results, "\u2705 X: posted text (ID: "+tweetID+") [Note: documents attach on LinkedIn]")
+			}
+		} else if dl != nil && inbound.Category == MediaCategoryVideo {
+			// Attempt media upload or fallback to text.
+			mediaID, err := xClient.UploadMedia(ctx, dl.Base64, dl.MIME)
+			if err == nil {
+				if tweetID, err := xClient.CreatePost(ctx, xText, []string{mediaID}); err == nil {
+					results = append(results, "\u2705 X: posted video (ID: "+tweetID+")")
+				} else {
+					if tweetID, terr := xClient.CreatePost(ctx, xText, nil); terr == nil {
+						results = append(results, "\u2705 X: posted text (ID: "+tweetID+")")
+					} else {
+						errs = append(errs, "X post: "+err.Error())
+					}
+				}
+			} else {
+				if tweetID, terr := xClient.CreatePost(ctx, xText, nil); terr == nil {
+					results = append(results, "\u2705 X: posted text (ID: "+tweetID+")")
+				} else {
+					errs = append(errs, "X upload: "+err.Error())
 				}
 			}
 		} else {
@@ -371,16 +430,47 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		liClient := linkedin.New(httpClient, cfg.LinkedInAccessToken, cfg.LinkedInVersion)
 
 		if dl != nil {
-			// Image post.
-			uploadURL, imageURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
-			if err != nil {
-				errs = append(errs, "LinkedIn init: "+err.Error())
-			} else if err := liClient.UploadImageBytes(ctx, uploadURL, dl.MIME, dl.Bytes); err != nil {
-				errs = append(errs, "LinkedIn upload: "+err.Error())
-			} else if postID, err := liClient.CreateImagePost(ctx, cfg.LinkedInAuthorURN, caption, imageURN, dl.Filename); err != nil {
-				errs = append(errs, "LinkedIn post: "+err.Error())
-			} else {
-				results = append(results, "\u2705 LinkedIn: posted (ID: "+postID+")")
+			switch inbound.Category {
+			case MediaCategoryImage:
+				uploadURL, imageURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
+				if err != nil {
+					errs = append(errs, "LinkedIn init: "+err.Error())
+				} else if err := liClient.UploadImageBytes(ctx, uploadURL, dl.MIME, dl.Bytes); err != nil {
+					errs = append(errs, "LinkedIn upload: "+err.Error())
+				} else if postID, err := liClient.CreateImagePost(ctx, cfg.LinkedInAuthorURN, caption, imageURN, dl.Filename); err != nil {
+					errs = append(errs, "LinkedIn post: "+err.Error())
+				} else {
+					results = append(results, "\u2705 LinkedIn: posted image (ID: "+postID+")")
+				}
+
+			case MediaCategoryDocument:
+				uploadURL, docURN, err := liClient.InitializeDocumentUpload(ctx, cfg.LinkedInAuthorURN)
+				if err != nil {
+					errs = append(errs, "LinkedIn doc init: "+err.Error())
+				} else if err := liClient.UploadDocumentBytes(ctx, uploadURL, dl.MIME, dl.Bytes); err != nil {
+					errs = append(errs, "LinkedIn doc upload: "+err.Error())
+				} else if postID, err := liClient.CreateDocumentPost(ctx, cfg.LinkedInAuthorURN, caption, docURN, dl.Filename); err != nil {
+					errs = append(errs, "LinkedIn doc post: "+err.Error())
+				} else {
+					results = append(results, "\u2705 LinkedIn: posted document (ID: "+postID+")")
+				}
+
+			case MediaCategoryVideo:
+				videoURN, uploadToken, instructions, err := liClient.InitializeVideoUpload(ctx, cfg.LinkedInAuthorURN, int64(len(dl.Bytes)))
+				if err != nil {
+					errs = append(errs, "LinkedIn video init: "+err.Error())
+				} else if etags, err := liClient.UploadVideoParts(ctx, instructions, dl.Bytes); err != nil {
+					errs = append(errs, "LinkedIn video upload: "+err.Error())
+				} else if err := liClient.FinalizeVideoUpload(ctx, videoURN, uploadToken, etags); err != nil {
+					errs = append(errs, "LinkedIn video finalize: "+err.Error())
+				} else if postID, err := liClient.CreateVideoPost(ctx, cfg.LinkedInAuthorURN, caption, videoURN, dl.Filename); err != nil {
+					errs = append(errs, "LinkedIn video post: "+err.Error())
+				} else {
+					results = append(results, "\u2705 LinkedIn: posted video (ID: "+postID+")")
+				}
+
+			default:
+				errs = append(errs, "LinkedIn: unsupported media category")
 			}
 		} else {
 			// Text-only post.

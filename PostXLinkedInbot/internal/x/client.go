@@ -25,7 +25,7 @@ type UploadMediaRequest struct {
 	Media    string `json:"media"`          // base64-encoded file data
 	Category string `json:"media_category"` // required: tweet_image, tweet_gif, tweet_video, etc.
 	// Optional fields per latest X v2 docs:
-	MediaType        string   `json:"media_type,omitempty"`         // e.g. image/jpeg, image/png
+	MediaType        string   `json:"media_type,omitempty"`        // e.g. image/jpeg, image/png
 	AdditionalOwners []string `json:"additional_owners,omitempty"` // user IDs
 	Shared           bool     `json:"shared,omitempty"`
 }
@@ -86,7 +86,7 @@ func (c *Client) UploadMedia(ctx context.Context, base64Media string, mediaType 
 }
 
 type CreatePostRequest struct {
-	Text  string `json:"text"`
+	Text  string `json:"text,omitempty"`
 	Media *struct {
 		MediaIDs []string `json:"media_ids"`
 	} `json:"media,omitempty"`
