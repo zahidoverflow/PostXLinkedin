@@ -381,19 +381,7 @@ func (c *Client) createMediaPost(ctx context.Context, authorURN string, caption 
 		return "", fmt.Errorf("linkedin create post failed: %s: %s", res.Status, body)
 	}
 
-	// LinkedIn returns the post ID in the x-restli-id response header.
-	if id := res.Header.Get("x-restli-id"); id != "" {
-		return id, nil
-	}
-	// Fallback: try parsing the JSON body.
-	var pr struct {
-		ID string `json:"id"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&pr)
-	if pr.ID != "" {
-		return pr.ID, nil
-	}
-	return "ok", nil
+	return parseCreatedPostID(res), nil
 }
 
 func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption string, imageURN string, title string) (string, error) {
@@ -450,10 +438,7 @@ func (c *Client) CreateTextPost(ctx context.Context, authorURN string, text stri
 		body, _ := readSmall(res.Body, 12<<10)
 		return "", fmt.Errorf("linkedin create text post failed: %s: %s", res.Status, body)
 	}
-	if id := res.Header.Get("x-restli-id"); id != "" {
-		return id, nil
-	}
-	return "ok", nil
+	return parseCreatedPostID(res), nil
 }
 
 type articleContent struct {
@@ -522,17 +507,26 @@ func (c *Client) CreateArticlePost(ctx context.Context, authorURN string, captio
 		return "", fmt.Errorf("linkedin create article post failed: %s: %s", res.Status, body)
 	}
 
+	return parseCreatedPostID(res), nil
+}
+
+func parseCreatedPostID(res *http.Response) string {
 	if id := res.Header.Get("x-restli-id"); id != "" {
-		return id, nil
+		return id
+	}
+	for k, v := range res.Header {
+		if strings.EqualFold(k, "x-restli-id") && len(v) > 0 && v[0] != "" {
+			return v[0]
+		}
 	}
 	var pr struct {
 		ID string `json:"id"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&pr)
 	if pr.ID != "" {
-		return pr.ID, nil
+		return pr.ID
 	}
-	return "ok", nil
+	return "ok"
 }
 
 func sanitizeCommentary(s string) string {

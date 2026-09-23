@@ -26,7 +26,8 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 	}
 	rt := Runtime{PollTimeout: pollTimeout}
 
-	bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+	botHTTPClient := &http.Client{Timeout: 90 * time.Second}
+	bot, err := tgbotapi.NewBotAPIWithClient(cfg.TelegramBotToken, tgbotapi.APIEndpoint, botHTTPClient)
 	if err != nil {
 		return fmt.Errorf("telegram init: %w", err)
 	}
@@ -92,6 +93,9 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 }
 
 func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *telegram.Client, sessions map[int64]*setup.Wizard, msg *tgbotapi.Message) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
 	chatID := msg.Chat.ID
 
 	// Setup wizard active: consume plain text replies but reject photos/media during setup.
@@ -291,7 +295,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	}
 	deleteProgress := func() {
 		for _, id := range progressMsgIDs {
-			_ = tg.DeleteMessage(chatID, id)
+			if err := tg.DeleteMessage(chatID, id); err != nil {
+				logger.Printf("[%d] deleteMessage %d: %v", chatID, id, err)
+			}
 		}
 		progressMsgIDs = nil
 	}
@@ -299,19 +305,19 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 
 	var dl *telegram.DownloadedFile
 	if inbound != nil {
-		if cfg.Debug {
-			logger.Printf("%s received: chat=%d file_id=%s filename=%s size=%d caption_len=%d",
-				inbound.Category, chatID, inbound.FileID, inbound.Filename, inbound.FileSize, len(postText))
-		}
+		logger.Printf("[%d] %s received: file_id=%s filename=%s size=%d caption_len=%d",
+			chatID, inbound.Category, inbound.FileID, inbound.Filename, inbound.FileSize, len(postText))
 
 		sendProgress(fmt.Sprintf("\u23f3 Downloading %s...", inbound.Category))
 
 		d, err := tg.DownloadMedia(ctx, inbound.FileID, inbound.Filename, inbound.MIME)
 		if err != nil {
 			deleteProgress()
+			logger.Printf("[%d] download failed: %v", chatID, err)
 			_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
 			return err
 		}
+		logger.Printf("[%d] downloaded %s (%d bytes)", chatID, inbound.Category, len(d.Bytes))
 
 		maxBytes := cfg.MaxImageBytes
 		if inbound.Category == MediaCategoryDocument || inbound.Category == MediaCategoryVideo {
@@ -480,44 +486,60 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		if dl != nil {
 			switch inbound.Category {
 			case MediaCategoryImage:
+				logger.Printf("[%d] uploading image to LinkedIn...", chatID)
 				uploadURL, imageURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
 				if err != nil {
 					errs = append(errs, "LinkedIn init: "+err.Error())
+					logger.Printf("[%d] LinkedIn init failed: %v", chatID, err)
 				} else if err := liClient.UploadImageBytes(ctx, uploadURL, dl.MIME, dl.Bytes); err != nil {
-					errs = append(errs, "LinkedIn upload: "+err.Error())
+					errs = append(errs, "LinkedIn upload failed: "+err.Error())
+					logger.Printf("[%d] LinkedIn upload failed: %v", chatID, err)
 				} else if postID, err := liClient.CreateImagePost(ctx, cfg.LinkedInAuthorURN, caption, imageURN, dl.Filename); err != nil {
-					errs = append(errs, "LinkedIn post: "+err.Error())
+					errs = append(errs, "LinkedIn post failed: "+err.Error())
+					logger.Printf("[%d] LinkedIn post failed: %v", chatID, err)
 				} else {
+					logger.Printf("[%d] LinkedIn image post created: %s", chatID, postID)
 					if u := FormatLinkedInPostURL(postID); u != "" {
 						postURLs = append(postURLs, u)
 					}
 				}
 
 			case MediaCategoryDocument:
+				logger.Printf("[%d] uploading document to LinkedIn...", chatID)
 				uploadURL, docURN, err := liClient.InitializeDocumentUpload(ctx, cfg.LinkedInAuthorURN)
 				if err != nil {
 					errs = append(errs, "LinkedIn doc init: "+err.Error())
+					logger.Printf("[%d] LinkedIn doc init failed: %v", chatID, err)
 				} else if err := liClient.UploadDocumentBytes(ctx, uploadURL, dl.MIME, dl.Bytes); err != nil {
 					errs = append(errs, "LinkedIn doc upload: "+err.Error())
+					logger.Printf("[%d] LinkedIn doc upload failed: %v", chatID, err)
 				} else if postID, err := liClient.CreateDocumentPost(ctx, cfg.LinkedInAuthorURN, caption, docURN, dl.Filename); err != nil {
 					errs = append(errs, "LinkedIn doc post: "+err.Error())
+					logger.Printf("[%d] LinkedIn doc post failed: %v", chatID, err)
 				} else {
+					logger.Printf("[%d] LinkedIn doc post created: %s", chatID, postID)
 					if u := FormatLinkedInPostURL(postID); u != "" {
 						postURLs = append(postURLs, u)
 					}
 				}
 
 			case MediaCategoryVideo:
+				logger.Printf("[%d] uploading video to LinkedIn...", chatID)
 				videoURN, uploadToken, instructions, err := liClient.InitializeVideoUpload(ctx, cfg.LinkedInAuthorURN, int64(len(dl.Bytes)))
 				if err != nil {
 					errs = append(errs, "LinkedIn video init: "+err.Error())
+					logger.Printf("[%d] LinkedIn video init failed: %v", chatID, err)
 				} else if etags, err := liClient.UploadVideoParts(ctx, instructions, dl.Bytes); err != nil {
 					errs = append(errs, "LinkedIn video upload: "+err.Error())
+					logger.Printf("[%d] LinkedIn video upload failed: %v", chatID, err)
 				} else if err := liClient.FinalizeVideoUpload(ctx, videoURN, uploadToken, etags); err != nil {
 					errs = append(errs, "LinkedIn video finalize: "+err.Error())
+					logger.Printf("[%d] LinkedIn video finalize failed: %v", chatID, err)
 				} else if postID, err := liClient.CreateVideoPost(ctx, cfg.LinkedInAuthorURN, caption, videoURN, dl.Filename); err != nil {
 					errs = append(errs, "LinkedIn video post: "+err.Error())
+					logger.Printf("[%d] LinkedIn video post failed: %v", chatID, err)
 				} else {
+					logger.Printf("[%d] LinkedIn video post created: %s", chatID, postID)
 					if u := FormatLinkedInPostURL(postID); u != "" {
 						postURLs = append(postURLs, u)
 					}
@@ -557,24 +579,31 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					}
 				}
 
+				logger.Printf("[%d] creating LinkedIn article post (link=%s)...", chatID, linkURL)
 				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, articleTitle, articleDesc, thumbnailURN); err == nil {
+					logger.Printf("[%d] LinkedIn article post created: %s", chatID, postID)
 					if u := FormatLinkedInPostURL(postID); u != "" {
 						postURLs = append(postURLs, u)
 					}
 				} else {
-					logger.Printf("LinkedIn article post failed (%v), falling back to text post", err)
+					logger.Printf("[%d] LinkedIn article post failed (%v), falling back to text post", chatID, err)
 					if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {
 						errs = append(errs, fmt.Sprintf("LinkedIn post failed (article: %v; fallback: %v)", err, terr))
+						logger.Printf("[%d] LinkedIn fallback text post failed: %v", chatID, terr)
 					} else {
+						logger.Printf("[%d] LinkedIn text fallback created: %s", chatID, postID)
 						if u := FormatLinkedInPostURL(postID); u != "" {
 							postURLs = append(postURLs, u)
 						}
 					}
 				}
 			} else {
+				logger.Printf("[%d] creating LinkedIn text post...", chatID)
 				if postID, err := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); err != nil {
 					errs = append(errs, "LinkedIn post: "+err.Error())
+					logger.Printf("[%d] LinkedIn text post failed: %v", chatID, err)
 				} else {
+					logger.Printf("[%d] LinkedIn text post created: %s", chatID, postID)
 					if u := FormatLinkedInPostURL(postID); u != "" {
 						postURLs = append(postURLs, u)
 					}
@@ -592,6 +621,8 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		for _, u := range postURLs {
 			summary.WriteString(u + "\n")
 		}
+	} else if len(postURLs) == 0 && len(errs) == 0 {
+		summary.WriteString("\u2705 <b>Posted successfully!</b>\n")
 	} else if len(postURLs) > 0 && len(errs) > 0 {
 		summary.WriteString("\u26a0\ufe0f <b>Partially posted:</b>\n\n")
 		for _, u := range postURLs {
@@ -608,7 +639,11 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		}
 		summary.WriteString("\n\U0001f4a1 <b>Tip:</b> Run /status to check your config, or /setup to reconfigure.")
 	}
-	_, _ = tg.SendHTML(chatID, summary.String())
+	if _, err := tg.SendHTML(chatID, summary.String()); err != nil {
+		logger.Printf("[%d] send summary failed: %v", chatID, err)
+	} else {
+		logger.Printf("[%d] summary sent successfully", chatID)
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("posting failed: %s", strings.Join(errs, "; "))

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -41,7 +42,16 @@ func (c *Client) SendHTML(chatID int64, html string) (tgbotapi.Message, error) {
 	m := tgbotapi.NewMessage(chatID, html)
 	m.ParseMode = tgbotapi.ModeHTML
 	m.DisableWebPagePreview = true
-	return c.bot.Send(m)
+	var msg tgbotapi.Message
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		msg, err = c.bot.Send(m)
+		if err == nil {
+			return msg, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return msg, err
 }
 
 func (c *Client) SendHTMLWithKeyboard(chatID int64, html string, keyboard tgbotapi.ReplyKeyboardMarkup) (tgbotapi.Message, error) {
@@ -61,7 +71,14 @@ func (c *Client) SendHTMLRemoveKeyboard(chatID int64, html string) (tgbotapi.Mes
 }
 
 func (c *Client) DeleteMessage(chatID int64, messageID int) error {
-	_, err := c.bot.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		_, err = c.bot.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
+		if err == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 	return err
 }
 
