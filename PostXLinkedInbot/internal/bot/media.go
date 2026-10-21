@@ -3,6 +3,7 @@ package bot
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf16"
 
@@ -218,6 +219,112 @@ func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
 		return strings.TrimRight(u, ".,;:!?)>]}'")
 	}
 	return ""
+}
+
+// ExpandTextLinks expands Telegram text_link entities into "Anchor (URL)" format.
+// If the anchor text is already identical to the URL or the URL immediately follows in parentheses,
+// duplicate URL insertion is avoided.
+func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
+	if text == "" || len(entities) == 0 {
+		return text
+	}
+
+	type textLink struct {
+		offset int
+		length int
+		url    string
+	}
+
+	u16 := utf16.Encode([]rune(text))
+	totalLen := len(u16)
+
+	var links []textLink
+	for _, ent := range entities {
+		if ent.Type == "text_link" && strings.TrimSpace(ent.URL) != "" {
+			start := ent.Offset
+			end := ent.Offset + ent.Length
+			if start >= 0 && end <= totalLen && start < end {
+				links = append(links, textLink{
+					offset: start,
+					length: ent.Length,
+					url:    strings.TrimSpace(ent.URL),
+				})
+			}
+		}
+	}
+
+	if len(links) == 0 {
+		return text
+	}
+
+	// Sort by offset ascending; if offsets match, wider range first.
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].offset == links[j].offset {
+			return links[i].length > links[j].length
+		}
+		return links[i].offset < links[j].offset
+	})
+
+	var b strings.Builder
+	lastPos := 0
+
+	for _, l := range links {
+		start := l.offset
+		end := l.offset + l.length
+
+		// Skip overlapping links that start before our current position.
+		if start < lastPos {
+			continue
+		}
+
+		// Append text between previous entity and current entity.
+		if start > lastPos {
+			b.WriteString(string(utf16.Decode(u16[lastPos:start])))
+		}
+
+		anchor := string(utf16.Decode(u16[start:end]))
+		cleanURL := strings.ReplaceAll(l.url, "&amp;", "&")
+
+		// Check if anchor is already identical to the URL.
+		anchorTrimmed := strings.TrimSpace(anchor)
+		isSameURL := strings.EqualFold(anchorTrimmed, cleanURL) ||
+			strings.EqualFold(strings.TrimRight(anchorTrimmed, "/"), strings.TrimRight(cleanURL, "/"))
+
+		// Check if the text immediately following already has the URL in parentheses.
+		alreadyFollowed := false
+		if end < totalLen {
+			followingText := string(utf16.Decode(u16[end:]))
+			trimmedFollowing := strings.TrimLeft(followingText, " \t")
+			expectedParen := "(" + cleanURL + ")"
+			expectedParenNoSlash := "(" + strings.TrimRight(cleanURL, "/") + ")"
+			if strings.HasPrefix(trimmedFollowing, expectedParen) || strings.HasPrefix(trimmedFollowing, expectedParenNoSlash) {
+				alreadyFollowed = true
+			}
+		}
+
+		if isSameURL || alreadyFollowed {
+			b.WriteString(anchor)
+		} else {
+			// Separate any trailing whitespace or newlines from anchor to keep formatting natural.
+			rightTrimmed := strings.TrimRight(anchor, " \t\r\n")
+			trailingWS := anchor[len(rightTrimmed):]
+
+			b.WriteString(rightTrimmed)
+			b.WriteString(" (")
+			b.WriteString(cleanURL)
+			b.WriteString(")")
+			b.WriteString(trailingWS)
+		}
+
+		lastPos = end
+	}
+
+	// Append any remaining text after the last link.
+	if lastPos < totalLen {
+		b.WriteString(string(utf16.Decode(u16[lastPos:])))
+	}
+
+	return b.String()
 }
 
 // FormatLinkedInPostURL builds a web URL for a published LinkedIn post URN or ID.

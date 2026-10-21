@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -391,6 +392,64 @@ func (c *Client) CreateImagePost(ctx context.Context, authorURN string, caption 
 	return c.createMediaPost(ctx, authorURN, caption, imageURN, title)
 }
 
+// CreateMultiImagePost creates an organic post with multiple images (2 to 20) on LinkedIn.
+func (c *Client) CreateMultiImagePost(ctx context.Context, authorURN string, caption string, imageURNs []string) (string, error) {
+	if len(imageURNs) == 0 {
+		return "", errors.New("no image URNs provided")
+	}
+	if len(imageURNs) == 1 {
+		return c.CreateImagePost(ctx, authorURN, caption, imageURNs[0], "Image")
+	}
+
+	type multiImageItem struct {
+		ID string `json:"id"`
+	}
+
+	images := make([]multiImageItem, 0, len(imageURNs))
+	for _, urn := range imageURNs {
+		images = append(images, multiImageItem{ID: urn})
+	}
+
+	reqBody := createPostReq{
+		Author:     authorURN,
+		Commentary: sanitizeCommentary(caption),
+		Visibility: "PUBLIC",
+		Distribution: map[string]any{
+			"feedDistribution":               "MAIN_FEED",
+			"targetEntities":                 []any{},
+			"thirdPartyDistributionChannels": []any{},
+		},
+		Content: map[string]any{
+			"multiImage": map[string]any{
+				"images": images,
+			},
+		},
+		LifecycleState:            "PUBLISHED",
+		IsReshareDisabledByAuthor: false,
+	}
+	b, _ := json.Marshal(reqBody)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint("/rest/posts"), bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	c.addHeaders(req)
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		body, _ := readSmall(res.Body, 12<<10)
+		return "", fmt.Errorf("linkedin create multiImage post failed: %s: %s", res.Status, body)
+	}
+
+	return parseCreatedPostID(res), nil
+}
+
 func (c *Client) CreateDocumentPost(ctx context.Context, authorURN string, caption string, docURN string, title string) (string, error) {
 	if title == "" {
 		title = "Document"
@@ -530,22 +589,16 @@ func parseCreatedPostID(res *http.Response) string {
 }
 
 func sanitizeCommentary(s string) string {
-	// LinkedIn's commentary field supports a specialized Markdown syntax.
-	// Reserved characters must be escaped with a backslash to be treated as literals.
-	// We escape the most common syntax characters that can break the parser.
-	r := strings.NewReplacer(
-		"\\", "\\\\",
-		"|", "\\|",
-		"(", "\\(",
-		")", "\\)",
-		"[", "\\[",
-		"]", "\\]",
-		"{", "\\{",
-		"}", "\\}",
-		"<", "\\<",
-		">", "\\>",
-	)
-	return r.Replace(s)
+	s = strings.ReplaceAll(s, "\r", "")
+	// LinkedIn's Little Text Format parser silently drops all text following an unescaped
+	// ASCII '('. Escaping with '\(' causes LinkedIn to render a literal '\' character on the post.
+	// Substituting with Unicode fullwidth parentheses '（' and '）' avoids both bugs while rendering
+	// clean parentheses on LinkedIn without truncation or backslash artifacts.
+	// Adding a space before '）' prevents LinkedIn's URL auto-linker from consuming the bracket into the URL.
+	s = strings.ReplaceAll(s, "(", "（")
+	s = strings.ReplaceAll(s, " )", "）")
+	s = strings.ReplaceAll(s, ")", " ）")
+	return s
 }
 
 func (c *Client) addHeaders(req *http.Request) {

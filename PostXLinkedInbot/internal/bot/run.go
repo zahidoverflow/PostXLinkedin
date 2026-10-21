@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -18,6 +19,60 @@ import (
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/telegram"
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/x"
 )
+
+type mediaGroupBatch struct {
+	messages []*tgbotapi.Message
+	timer    *time.Timer
+}
+
+type mediaGroupCollector struct {
+	mu      sync.Mutex
+	batches map[string]*mediaGroupBatch
+	ready   chan []*tgbotapi.Message
+	timeout time.Duration
+}
+
+func newMediaGroupCollector(ready chan []*tgbotapi.Message, timeout time.Duration) *mediaGroupCollector {
+	return &mediaGroupCollector{
+		batches: make(map[string]*mediaGroupBatch),
+		ready:   ready,
+		timeout: timeout,
+	}
+}
+
+func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	id := msg.MediaGroupID
+	if b, ok := c.batches[id]; ok {
+		b.messages = append(b.messages, msg)
+		b.timer.Reset(c.timeout)
+		return
+	}
+
+	b := &mediaGroupBatch{
+		messages: []*tgbotapi.Message{msg},
+	}
+	b.timer = time.AfterFunc(c.timeout, func() {
+		c.mu.Lock()
+		msgs := b.messages
+		delete(c.batches, id)
+		c.mu.Unlock()
+
+		c.ready <- msgs
+	})
+	c.batches[id] = b
+}
+
+func (c *mediaGroupCollector) StopAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, b := range c.batches {
+		b.timer.Stop()
+		delete(c.batches, id)
+	}
+}
 
 func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) error {
 	cfg, err := LoadConfig()
@@ -58,11 +113,19 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 	updateCfg.Timeout = int(rt.PollTimeout.Seconds())
 	updates := bot.GetUpdatesChan(updateCfg)
 
+	mgReady := make(chan []*tgbotapi.Message, 16)
+	mgCollector := newMediaGroupCollector(mgReady, 1200*time.Millisecond)
+	defer mgCollector.StopAll()
+
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Printf("shutdown requested")
 			return nil
+		case msgs := <-mgReady:
+			if err := handleMessages(ctx, logger, &cfg, tg, sessions, msgs); err != nil {
+				logger.Printf("handleMessages error: %v", err)
+			}
 		case upd := <-updates:
 			if upd.CallbackQuery != nil {
 				// Acknowledge callback queries (future inline-keyboard support).
@@ -85,17 +148,31 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 				continue
 			}
 
-			if err := handleMessage(ctx, logger, &cfg, tg, sessions, upd.Message); err != nil {
-				logger.Printf("handleMessage error: %v", err)
+			// If this message belongs to a media group (album), buffer it so all items are collected.
+			if upd.Message.MediaGroupID != "" {
+				mgCollector.Add(upd.Message)
+				continue
+			}
+
+			if err := handleMessages(ctx, logger, &cfg, tg, sessions, []*tgbotapi.Message{upd.Message}); err != nil {
+				logger.Printf("handleMessages error: %v", err)
 			}
 		}
 	}
 }
 
 func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *telegram.Client, sessions map[int64]*setup.Wizard, msg *tgbotapi.Message) error {
+	return handleMessages(ctx, logger, cfg, tg, sessions, []*tgbotapi.Message{msg})
+}
+
+func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *telegram.Client, sessions map[int64]*setup.Wizard, msgs []*tgbotapi.Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
+	msg := msgs[0]
 	chatID := msg.Chat.ID
 
 	// Setup wizard active: consume plain text replies but reject photos/media during setup.
@@ -249,32 +326,62 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		return nil
 	}
 
-	// Extract inbound media if present.
-	inbound := ExtractInboundMedia(msg)
-	postText := msg.Text
-	if inbound != nil {
-		if msg.Caption != "" {
-			postText = msg.Caption
-		} else if msg.Text != "" {
-			postText = msg.Text
-		} else {
-			postText = ""
+	// Extract text, caption, and entities across all messages in the batch.
+	var postText string
+	var entities []tgbotapi.MessageEntity
+	isForwarded := false
+
+	for _, m := range msgs {
+		if m.ForwardDate != 0 || m.ForwardFrom != nil || m.ForwardFromChat != nil || m.ForwardSenderName != "" {
+			isForwarded = true
+		}
+		if postText == "" {
+			if m.Caption != "" {
+				postText = m.Caption
+				entities = m.CaptionEntities
+				if len(entities) == 0 {
+					entities = m.Entities
+				}
+			} else if m.Text != "" {
+				postText = m.Text
+				entities = m.Entities
+				if len(entities) == 0 {
+					entities = m.CaptionEntities
+				}
+			}
 		}
 	}
 
-	if inbound != nil && inbound.Category == MediaCategoryAudio {
-		_, _ = tg.SendHTML(chatID, "\u26a0\ufe0f LinkedIn API does not support direct audio feed posts (audio is supported only on profile work samples).\n\nTo share audio on LinkedIn, please convert it to a video (e.g. MP4) and send it with a caption.")
-		return nil
+	// Expand any hyperlinked text (text_link entities) so the URL appears alongside anchor text:
+	// e.g. "Source." -> "Source. (https://...)"
+	if len(entities) > 0 {
+		postText = ExpandTextLinks(postText, entities)
 	}
 
-	if inbound != nil && inbound.Category == MediaCategoryUnknown {
-		_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c Unsupported file type: <code>%s</code>\n\n<b>Supported on LinkedIn:</b>\n\u2022 <b>Images:</b> JPG, PNG, GIF, WebP, HEIC\n\u2022 <b>Documents:</b> PDF, DOC/DOCX, PPT/PPTX, ODT, ODS\n\u2022 <b>Videos:</b> MP4, MOV, AVI, WEBM, MKV", inbound.Filename))
-		return nil
+	// Extract inbound media from all messages in the batch
+	type mediaItem struct {
+		inbound *InboundMedia
+		msg     *tgbotapi.Message
+	}
+	var mediaItems []mediaItem
+	for _, m := range msgs {
+		if inb := ExtractInboundMedia(m); inb != nil {
+			mediaItems = append(mediaItems, mediaItem{inbound: inb, msg: m})
+		}
 	}
 
-	isForwarded := msg.ForwardDate != 0 || msg.ForwardFrom != nil || msg.ForwardFromChat != nil || msg.ForwardSenderName != ""
+	for _, item := range mediaItems {
+		if item.inbound.Category == MediaCategoryAudio {
+			_, _ = tg.SendHTML(chatID, "\u26a0\ufe0f LinkedIn API does not support direct audio feed posts (audio is supported only on profile work samples).\n\nTo share audio on LinkedIn, please convert it to a video (e.g. MP4) and send it with a caption.")
+			return nil
+		}
+		if item.inbound.Category == MediaCategoryUnknown {
+			_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c Unsupported file type: <code>%s</code>\n\n<b>Supported on LinkedIn:</b>\n\u2022 <b>Images:</b> JPG, PNG, GIF, WebP, HEIC\n\u2022 <b>Documents:</b> PDF, DOC/DOCX, PPT/PPTX, ODT, ODS\n\u2022 <b>Videos:</b> MP4, MOV, AVI, WEBM, MKV", item.inbound.Filename))
+			return nil
+		}
+	}
 
-	if inbound != nil && strings.TrimSpace(postText) == "" {
+	if len(mediaItems) > 0 && strings.TrimSpace(postText) == "" {
 		if isForwarded {
 			_, _ = tg.SendHTML(chatID, "\u26a0\ufe0f <b>Forwarded media has no caption.</b>\n\nA caption is required for your post text.\n\n\U0001f449 <i>Tip: When forwarding in Telegram, tap the preview to add a comment before sending, or send the file directly with a caption.</i>")
 		} else {
@@ -282,7 +389,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 		}
 		return nil
 	}
-	if inbound == nil && strings.TrimSpace(postText) == "" {
+	if len(mediaItems) == 0 && strings.TrimSpace(postText) == "" {
 		_, _ = tg.SendHTML(chatID, "\U0001f4f8 Send or forward a <b>photo, document, or video with caption</b> for a media post.\n\U0001f4dd Or send a <b>text message</b> for a text-only post.")
 		return nil
 	}
@@ -303,38 +410,52 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 	}
 	defer deleteProgress()
 
-	var dl *telegram.DownloadedFile
-	if inbound != nil {
-		logger.Printf("[%d] %s received: file_id=%s filename=%s size=%d caption_len=%d",
-			chatID, inbound.Category, inbound.FileID, inbound.Filename, inbound.FileSize, len(postText))
-
-		sendProgress(fmt.Sprintf("\u23f3 Downloading %s...", inbound.Category))
-
-		d, err := tg.DownloadMedia(ctx, inbound.FileID, inbound.Filename, inbound.MIME)
-		if err != nil {
-			deleteProgress()
-			logger.Printf("[%d] download failed: %v", chatID, err)
-			_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
-			return err
+	var downloadedFiles []telegram.DownloadedFile
+	if len(mediaItems) > 0 {
+		if len(mediaItems) == 1 {
+			sendProgress(fmt.Sprintf("\u23f3 Downloading %s...", mediaItems[0].inbound.Category))
+		} else {
+			sendProgress(fmt.Sprintf("\u23f3 Downloading %d media items...", len(mediaItems)))
 		}
-		logger.Printf("[%d] downloaded %s (%d bytes)", chatID, inbound.Category, len(d.Bytes))
 
-		maxBytes := cfg.MaxImageBytes
-		if inbound.Category == MediaCategoryDocument || inbound.Category == MediaCategoryVideo {
-			if maxBytes < 20<<20 {
-				maxBytes = 20 << 20
+		for idx, item := range mediaItems {
+			logger.Printf("[%d] downloading %s (%d/%d): file_id=%s filename=%s size=%d",
+				chatID, item.inbound.Category, idx+1, len(mediaItems), item.inbound.FileID, item.inbound.Filename, item.inbound.FileSize)
+
+			d, err := tg.DownloadMedia(ctx, item.inbound.FileID, item.inbound.Filename, item.inbound.MIME)
+			if err != nil {
+				deleteProgress()
+				logger.Printf("[%d] download item %d failed: %v", chatID, idx+1, err)
+				_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
+				return err
 			}
-		}
 
-		if int64(len(d.Bytes)) > maxBytes {
-			deleteProgress()
-			_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c File too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing.", len(d.Bytes), maxBytes))
-			return errors.New("file too large")
+			maxBytes := cfg.MaxImageBytes
+			if item.inbound.Category == MediaCategoryDocument || item.inbound.Category == MediaCategoryVideo {
+				if maxBytes < 20<<20 {
+					maxBytes = 20 << 20
+				}
+			}
+
+			if int64(len(d.Bytes)) > maxBytes {
+				deleteProgress()
+				_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c File too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing.", len(d.Bytes), maxBytes))
+				return errors.New("file too large")
+			}
+			downloadedFiles = append(downloadedFiles, d)
 		}
-		dl = &d
+		logger.Printf("[%d] downloaded %d media items successfully", chatID, len(downloadedFiles))
 	} else {
 		if cfg.Debug {
 			logger.Printf("text post received: chat=%d text_len=%d", chatID, len(postText))
+		}
+	}
+
+	allImages := len(mediaItems) > 0
+	for _, item := range mediaItems {
+		if item.inbound.Category != MediaCategoryImage {
+			allImages = false
+			break
 		}
 	}
 
@@ -370,11 +491,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 
 	linkURL := ""
 	var linkMeta *opengraph.Metadata
-	if dl == nil {
-		entities := msg.Entities
-		if len(entities) == 0 && len(msg.CaptionEntities) > 0 {
-			entities = msg.CaptionEntities
-		}
+	if len(downloadedFiles) == 0 {
 		linkURL = ExtractFirstURL(caption, entities)
 		if linkURL != "" {
 			fetchCtx, fetchCancel := context.WithTimeout(ctx, 8*time.Second)
@@ -405,16 +522,26 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 			xText = truncateRunes(xText, 277) + "..."
 		}
 
-		if dl != nil && inbound.Category == MediaCategoryImage {
-			// Image post.
-			mediaID, err := xClient.UploadMedia(ctx, dl.Base64, dl.MIME)
-			if err != nil {
-				errs = append(errs, "X upload: "+err.Error())
-				if isXAuthError(err) {
-					errs = append(errs, xAuthHint)
+		if len(downloadedFiles) > 0 && allImages {
+			var mediaIDs []string
+			limit := len(downloadedFiles)
+			if limit > 4 {
+				limit = 4
+			}
+			for i := 0; i < limit; i++ {
+				d := downloadedFiles[i]
+				mediaID, err := xClient.UploadMedia(ctx, d.Base64, d.MIME)
+				if err != nil {
+					errs = append(errs, "X upload: "+err.Error())
+					if isXAuthError(err) {
+						errs = append(errs, xAuthHint)
+					}
+					break
 				}
-			} else {
-				if tweetID, err := xClient.CreatePost(ctx, xText, []string{mediaID}); err != nil {
+				mediaIDs = append(mediaIDs, mediaID)
+			}
+			if len(mediaIDs) > 0 {
+				if tweetID, err := xClient.CreatePost(ctx, xText, mediaIDs); err != nil {
 					errs = append(errs, "X post: "+err.Error())
 					if isXAuthError(err) {
 						errs = append(errs, xAuthHint)
@@ -425,7 +552,7 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					}
 				}
 			}
-		} else if dl != nil && inbound.Category == MediaCategoryDocument {
+		} else if len(downloadedFiles) == 1 && mediaItems[0].inbound.Category == MediaCategoryDocument {
 			// X doesn't support documents as media attachments; post caption as text post.
 			if tweetID, err := xClient.CreatePost(ctx, xText, nil); err != nil {
 				errs = append(errs, "X post: "+err.Error())
@@ -437,8 +564,9 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 					postURLs = append(postURLs, u)
 				}
 			}
-		} else if dl != nil && inbound.Category == MediaCategoryVideo {
+		} else if len(downloadedFiles) == 1 && mediaItems[0].inbound.Category == MediaCategoryVideo {
 			// Attempt media upload or fallback to text.
+			dl := downloadedFiles[0]
 			mediaID, err := xClient.UploadMedia(ctx, dl.Base64, dl.MIME)
 			if err == nil {
 				if tweetID, err := xClient.CreatePost(ctx, xText, []string{mediaID}); err == nil {
@@ -483,7 +611,42 @@ func handleMessage(ctx context.Context, logger *log.Logger, cfg *Config, tg *tel
 
 		liClient := linkedin.New(httpClient, cfg.LinkedInAccessToken, cfg.LinkedInVersion)
 
-		if dl != nil {
+		if len(downloadedFiles) > 1 && allImages {
+			// Multi-image post!
+			logger.Printf("[%d] uploading %d images to LinkedIn...", chatID, len(downloadedFiles))
+			var imageURNs []string
+			var uploadErr error
+			for idx, d := range downloadedFiles {
+				uploadURL, imgURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
+				if err != nil {
+					uploadErr = fmt.Errorf("LinkedIn image %d init: %w", idx+1, err)
+					break
+				}
+				if err := liClient.UploadImageBytes(ctx, uploadURL, d.MIME, d.Bytes); err != nil {
+					uploadErr = fmt.Errorf("LinkedIn image %d upload: %w", idx+1, err)
+					break
+				}
+				imageURNs = append(imageURNs, imgURN)
+			}
+
+			if uploadErr != nil {
+				errs = append(errs, uploadErr.Error())
+				logger.Printf("[%d] LinkedIn image upload failed: %v", chatID, uploadErr)
+			} else {
+				logger.Printf("[%d] creating LinkedIn multiImage post with %d images...", chatID, len(imageURNs))
+				if postID, err := liClient.CreateMultiImagePost(ctx, cfg.LinkedInAuthorURN, caption, imageURNs); err != nil {
+					errs = append(errs, "LinkedIn multi-image post failed: "+err.Error())
+					logger.Printf("[%d] LinkedIn multiImage post failed: %v", chatID, err)
+				} else {
+					logger.Printf("[%d] LinkedIn multiImage post created: %s", chatID, postID)
+					if u := FormatLinkedInPostURL(postID); u != "" {
+						postURLs = append(postURLs, u)
+					}
+				}
+			}
+		} else if len(downloadedFiles) == 1 {
+			dl := downloadedFiles[0]
+			inbound := mediaItems[0].inbound
 			switch inbound.Category {
 			case MediaCategoryImage:
 				logger.Printf("[%d] uploading image to LinkedIn...", chatID)

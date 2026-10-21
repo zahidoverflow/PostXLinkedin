@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -185,5 +186,82 @@ func TestLinkedInArticlePost(t *testing.T) {
 	}
 	if article["thumbnail"] != "urn:li:image:thumb123" {
 		t.Errorf("expected thumbnail 'urn:li:image:thumb123', got %v", article["thumbnail"])
+	}
+}
+
+func TestLinkedInMultiImagePost(t *testing.T) {
+	mux := http.NewServeMux()
+
+	var receivedBody map[string]any
+	mux.HandleFunc("/rest/posts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&receivedBody); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+		w.Header().Set("x-restli-id", "urn:li:share:multi-image-789")
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	client := New(srv.Client(), "test-token", "202601")
+	client.SetBaseURL(srv.URL)
+
+	ctx := context.Background()
+	urns := []string{"urn:li:image:img1", "urn:li:image:img2"}
+	caption := "Here are our updates: Source. (https://example.com/info)"
+	postID, err := client.CreateMultiImagePost(ctx, "urn:li:person:zahid", caption, urns)
+	if err != nil {
+		t.Fatalf("CreateMultiImagePost failed: %v", err)
+	}
+	if postID != "urn:li:share:multi-image-789" {
+		t.Fatalf("expected urn:li:share:multi-image-789, got %s", postID)
+	}
+
+	// Verify commentary has NO backslashes before parentheses and uses safe parens
+	comm, ok := receivedBody["commentary"].(string)
+	if !ok {
+		t.Fatalf("missing commentary: %+v", receivedBody)
+	}
+	expectedComm := sanitizeCommentary(caption)
+	if comm != expectedComm {
+		t.Errorf("commentary mismatch! Got %q, want %q", comm, expectedComm)
+	}
+	if strings.Contains(comm, `\(`) || strings.Contains(comm, `\)`) {
+		t.Errorf("commentary contains backslash escapes: %q", comm)
+	}
+
+	// Verify multiImage schema
+	content, ok := receivedBody["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing content: %+v", receivedBody)
+	}
+	multiImage, ok := content["multiImage"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing multiImage in content: %+v", content)
+	}
+	images, ok := multiImage["images"].([]any)
+	if !ok || len(images) != 2 {
+		t.Fatalf("expected 2 images, got: %+v", multiImage["images"])
+	}
+	img0 := images[0].(map[string]any)
+	img1 := images[1].(map[string]any)
+	if img0["id"] != "urn:li:image:img1" || img1["id"] != "urn:li:image:img2" {
+		t.Errorf("unexpected image URNs in multiImage: %+v", images)
+	}
+}
+
+func TestSanitizeCommentaryNoBackslash(t *testing.T) {
+	input := "Source. (https://www.theinformation.com/articles/something?a=1&b=2) [note]"
+	output := sanitizeCommentary(input)
+	if strings.Contains(output, `\(`) || strings.Contains(output, `\)`) {
+		t.Errorf("sanitizeCommentary introduced backslashes: %q", output)
+	}
+	expected := "Source. （https://www.theinformation.com/articles/something?a=1&b=2 ） [note]"
+	if output != expected {
+		t.Errorf("sanitizeCommentary mismatch! Got %q, want %q", output, expected)
 	}
 }
