@@ -1,6 +1,8 @@
 package bot
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -541,5 +543,139 @@ func TestRedundantFilenameCommentAndMeaningfulFilename(t *testing.T) {
 	}
 	if hasMeaningfulFilename("photo.jpg") {
 		t.Errorf("expected photo.jpg not to be meaningful filename")
+	}
+}
+
+func TestBulkForwardSelectAllOrder(t *testing.T) {
+	queue := newPostQueue()
+	collector := newMediaGroupCollectorWithQueue(queue, 120*time.Millisecond)
+	defer collector.StopAll()
+
+	chat := &tgbotapi.Chat{ID: 593365882}
+
+	// Simulate user selecting 6 distinct posts in a channel (mix of link posts, multi-photo albums, single photo, PDF)
+	// and forwarding them all at once:
+	// Post 1: Link post (MessageID 101)
+	// Post 2: 3-photo album (MessageID 102, 103, 104, MediaGroupID "album-A")
+	// Post 3: Single photo post (MessageID 105)
+	// Post 4: 2-photo album (MessageID 106, 107, MediaGroupID "album-B")
+	// Post 5: PDF document post (MessageID 108)
+	// Post 6: Link post (MessageID 109)
+	incoming := []*tgbotapi.Message{
+		{MessageID: 101, Chat: chat, ForwardDate: 1700000001, Text: "Post 1 https://example.com/1"},
+		{MessageID: 102, Chat: chat, ForwardDate: 1700000002, MediaGroupID: "album-A", Caption: "Album A", Photo: []tgbotapi.PhotoSize{{FileID: "a1", FileSize: 100}}},
+		{MessageID: 103, Chat: chat, ForwardDate: 1700000002, MediaGroupID: "album-A", Photo: []tgbotapi.PhotoSize{{FileID: "a2", FileSize: 100}}},
+		{MessageID: 104, Chat: chat, ForwardDate: 1700000002, MediaGroupID: "album-A", Photo: []tgbotapi.PhotoSize{{FileID: "a3", FileSize: 100}}},
+		{MessageID: 105, Chat: chat, ForwardDate: 1700000003, Caption: "Single Photo", Photo: []tgbotapi.PhotoSize{{FileID: "p1", FileSize: 100}}},
+		{MessageID: 106, Chat: chat, ForwardDate: 1700000004, MediaGroupID: "album-B", Caption: "Album B", Photo: []tgbotapi.PhotoSize{{FileID: "b1", FileSize: 100}}},
+		{MessageID: 107, Chat: chat, ForwardDate: 1700000004, MediaGroupID: "album-B", Photo: []tgbotapi.PhotoSize{{FileID: "b2", FileSize: 100}}},
+		{MessageID: 108, Chat: chat, ForwardDate: 1700000005, Document: &tgbotapi.Document{FileID: "d1", FileName: "guide.pdf", MimeType: "application/pdf"}},
+		{MessageID: 109, Chat: chat, ForwardDate: 1700000006, Text: "Post 6 https://example.com/6"},
+	}
+
+	for _, m := range incoming {
+		collector.Add(m)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	expectedBatches := [][]int{
+		{101},
+		{102, 103, 104},
+		{105},
+		{106, 107},
+		{108},
+		{109},
+	}
+
+	for i, wantIDs := range expectedBatches {
+		batch, ok := queue.Dequeue(ctx)
+		if !ok {
+			t.Fatalf("batch %d: queue closed early", i)
+		}
+		if len(batch) != len(wantIDs) {
+			t.Fatalf("batch %d: got %d messages, want %d (%v)", i, len(batch), len(wantIDs), wantIDs)
+		}
+		for j, wantID := range wantIDs {
+			if batch[j].MessageID != wantID {
+				t.Fatalf("batch %d item %d: got MessageID %d, want %d", i, j, batch[j].MessageID, wantID)
+			}
+		}
+	}
+
+	if queue.Len() != 0 {
+		t.Fatalf("expected empty queue after consuming all 6 posts, got %d remaining", queue.Len())
+	}
+}
+
+func TestContinuousForwardingWithSlowWorker(t *testing.T) {
+	queue := newPostQueue()
+	collector := newMediaGroupCollectorWithQueue(queue, 80*time.Millisecond)
+	defer collector.StopAll()
+
+	chat := &tgbotapi.Chat{ID: 593365882}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Start simulated slow worker that takes 50ms per post while updates stream in fast
+	var processed [][]int
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for len(processed) < 10 {
+			batch, ok := queue.Dequeue(ctx)
+			if !ok {
+				return
+			}
+			var ids []int
+			for _, m := range batch {
+				ids = append(ids, m.MessageID)
+			}
+			processed = append(processed, ids)
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
+
+	// Stream 10 posts (including an album in the middle) while worker is busy
+	msgID := 1
+	for p := 0; p < 10; p++ {
+		if p == 4 {
+			// 3-photo album
+			gID := fmt.Sprintf("grp-%d", p)
+			for k := 0; k < 3; k++ {
+				collector.Add(&tgbotapi.Message{
+					MessageID:    msgID,
+					Chat:         chat,
+					ForwardDate:  1700000000 + p,
+					MediaGroupID: gID,
+					Caption:      "Album caption",
+					Photo:        []tgbotapi.PhotoSize{{FileID: "f", FileSize: 100}},
+				})
+				msgID++
+			}
+		} else {
+			collector.Add(&tgbotapi.Message{
+				MessageID:   msgID,
+				Chat:        chat,
+				ForwardDate: 1700000000 + p,
+				Text:        fmt.Sprintf("Post %d", p),
+			})
+			msgID++
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for worker to process 10 posts (processed=%d)", len(processed))
+	}
+
+	if len(processed) != 10 {
+		t.Fatalf("expected 10 processed posts, got %d", len(processed))
+	}
+	if len(processed[4]) != 3 {
+		t.Fatalf("expected post index 4 (album) to have 3 messages, got %v", processed[4])
 	}
 }

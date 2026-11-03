@@ -23,7 +23,17 @@ func New(bot *tgbotapi.BotAPI, httpClient *http.Client) *Client {
 }
 
 func (c *Client) SendText(chatID int64, text string) (tgbotapi.Message, error) {
-	return c.bot.Send(tgbotapi.NewMessage(chatID, text))
+	m := tgbotapi.NewMessage(chatID, text)
+	var msg tgbotapi.Message
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		msg, err = c.bot.Send(m)
+		if err == nil {
+			return msg, nil
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	return msg, err
 }
 
 func (c *Client) SendTextWithKeyboard(chatID int64, text string, keyboard tgbotapi.ReplyKeyboardMarkup) (tgbotapi.Message, error) {
@@ -105,26 +115,55 @@ func (c *Client) DownloadPhoto(ctx context.Context, fileID string) (DownloadedFi
 }
 
 func (c *Client) DownloadMedia(ctx context.Context, fileID string, preferredFilename string, preferredMIME string) (DownloadedFile, error) {
-	f, err := c.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	var f tgbotapi.File
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		f, err = c.bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+		if err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return DownloadedFile{}, ctx.Err()
+		case <-time.After(time.Duration((attempt+1)*400) * time.Millisecond):
+		}
+	}
 	if err != nil {
 		return DownloadedFile{}, fmt.Errorf("getFile: %w", err)
 	}
 
 	url := f.Link(c.bot.Token)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return DownloadedFile{}, err
+	var b []byte
+	var contentTypeHeader string
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return DownloadedFile{}, ctx.Err()
+			case <-time.After(time.Duration(attempt*500) * time.Millisecond):
+			}
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if reqErr != nil {
+			return DownloadedFile{}, reqErr
+		}
+		res, doErr := c.httpClient.Do(req)
+		if doErr != nil {
+			err = fmt.Errorf("download: %w", doErr)
+			continue
+		}
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			err = fmt.Errorf("download status: %s", res.Status)
+			res.Body.Close()
+			continue
+		}
+		contentTypeHeader = res.Header.Get("Content-Type")
+		b, err = readAllLimit(res.Body, 25<<20) // hard cap 25MB
+		res.Body.Close()
+		if err == nil {
+			break
+		}
 	}
-	res, err := c.httpClient.Do(req)
-	if err != nil {
-		return DownloadedFile{}, fmt.Errorf("download: %w", err)
-	}
-	defer res.Body.Close()
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return DownloadedFile{}, fmt.Errorf("download status: %s", res.Status)
-	}
-
-	b, err := readAllLimit(res.Body, 25<<20) // hard cap 25MB
 	if err != nil {
 		return DownloadedFile{}, err
 	}
@@ -132,7 +171,7 @@ func (c *Client) DownloadMedia(ctx context.Context, fileID string, preferredFile
 	// Determine MIME: prefer preferredMIME if valid, then Content-Type header, then extension, then byte sniffing.
 	m := strings.TrimSpace(strings.Split(preferredMIME, ";")[0])
 	if m == "" || m == "application/octet-stream" {
-		m = strings.TrimSpace(strings.Split(res.Header.Get("Content-Type"), ";")[0])
+		m = strings.TrimSpace(strings.Split(contentTypeHeader, ";")[0])
 	}
 	if m == "" || m == "application/octet-stream" {
 		targetPath := f.FilePath

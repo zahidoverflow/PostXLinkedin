@@ -380,15 +380,20 @@ func FetchImage(ctx context.Context, client *http.Client, imageURL string, maxBy
 		maxBytes = 10 << 20 // 10MB default
 	}
 
-	userAgents := []string{defaultUserAgent, telegramBotUserAgent, defaultUserAgent}
+	userAgents := []string{telegramBotUserAgent, defaultUserAgent, "curl/8.5.0"}
 	var lastErr error
+
+	referer := ""
+	if parsed, err := url.Parse(imageURL); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		referer = parsed.Scheme + "://" + parsed.Host + "/"
+	}
 
 	for attempt, ua := range userAgents {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
 				return nil, "", ctx.Err()
-			case <-time.After(time.Duration(attempt*600) * time.Millisecond):
+			case <-time.After(time.Duration(attempt*400) * time.Millisecond):
 			}
 		}
 
@@ -398,6 +403,9 @@ func FetchImage(ctx context.Context, client *http.Client, imageURL string, maxBy
 		}
 		req.Header.Set("User-Agent", ua)
 		req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+		if referer != "" {
+			req.Header.Set("Referer", referer)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -405,7 +413,8 @@ func FetchImage(ctx context.Context, client *http.Client, imageURL string, maxBy
 			continue
 		}
 
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 || resp.StatusCode == http.StatusAccepted {
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized ||
+			resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 || resp.StatusCode == http.StatusAccepted {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("image fetch failed with status %d", resp.StatusCode)
 			continue

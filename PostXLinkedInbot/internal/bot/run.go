@@ -20,25 +20,122 @@ import (
 	"github.com/zahidoverflow/PostXLinkedin/PostXLinkedInbot/internal/x"
 )
 
+type postQueue struct {
+	mu     sync.Mutex
+	items  [][]*tgbotapi.Message
+	notify chan struct{}
+}
+
+func newPostQueue() *postQueue {
+	return &postQueue{
+		notify: make(chan struct{}, 1),
+	}
+}
+
+func (q *postQueue) Enqueue(msgs []*tgbotapi.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	q.mu.Lock()
+	q.items = append(q.items, msgs)
+	q.mu.Unlock()
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (q *postQueue) Dequeue(ctx context.Context) ([]*tgbotapi.Message, bool) {
+	for {
+		q.mu.Lock()
+		if len(q.items) > 0 {
+			item := q.items[0]
+			q.items[0] = nil
+			q.items = q.items[1:]
+			hasMore := len(q.items) > 0
+			q.mu.Unlock()
+			if hasMore {
+				select {
+				case q.notify <- struct{}{}:
+				default:
+				}
+			}
+			return item, true
+		}
+		q.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-q.notify:
+		}
+	}
+}
+
+func (q *postQueue) Len() int {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.items)
+}
+
 type mediaGroupBatch struct {
 	messages []*tgbotapi.Message
 	timer    *time.Timer
+	chatID   int64
 }
 
 type mediaGroupCollector struct {
-	mu              sync.Mutex
-	batches         map[string]*mediaGroupBatch
-	pendingComments map[int64]*mediaGroupBatch
-	ready           chan []*tgbotapi.Message
-	timeout         time.Duration
+	mu                sync.Mutex
+	batches           map[string]*mediaGroupBatch
+	activeGroupByChat map[int64]string
+	pendingComments   map[int64]*mediaGroupBatch
+	ready             chan []*tgbotapi.Message
+	queue             *postQueue
+	timeout           time.Duration
 }
 
 func newMediaGroupCollector(ready chan []*tgbotapi.Message, timeout time.Duration) *mediaGroupCollector {
 	return &mediaGroupCollector{
-		batches:         make(map[string]*mediaGroupBatch),
-		pendingComments: make(map[int64]*mediaGroupBatch),
-		ready:           ready,
-		timeout:         timeout,
+		batches:           make(map[string]*mediaGroupBatch),
+		activeGroupByChat: make(map[int64]string),
+		pendingComments:   make(map[int64]*mediaGroupBatch),
+		ready:             ready,
+		timeout:           timeout,
+	}
+}
+
+func newMediaGroupCollectorWithQueue(queue *postQueue, timeout time.Duration) *mediaGroupCollector {
+	return &mediaGroupCollector{
+		batches:           make(map[string]*mediaGroupBatch),
+		activeGroupByChat: make(map[int64]string),
+		pendingComments:   make(map[int64]*mediaGroupBatch),
+		queue:             queue,
+		timeout:           timeout,
+	}
+}
+
+func (c *mediaGroupCollector) emitLocked(msgs []*tgbotapi.Message) {
+	if len(msgs) == 0 {
+		return
+	}
+	if c.queue != nil {
+		c.queue.Enqueue(msgs)
+	}
+	if c.ready != nil {
+		c.ready <- msgs
+	}
+}
+
+func (c *mediaGroupCollector) flushActiveGroupLocked(chatID int64) {
+	prevID, ok := c.activeGroupByChat[chatID]
+	if !ok || prevID == "" {
+		return
+	}
+	delete(c.activeGroupByChat, chatID)
+	if b, exists := c.batches[prevID]; exists {
+		b.timer.Stop()
+		delete(c.batches, prevID)
+		c.emitLocked(b.messages)
 	}
 }
 
@@ -56,6 +153,12 @@ func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
 	var chatID int64
 	if msg.Chat != nil {
 		chatID = msg.Chat.ID
+	}
+
+	// If a different message or album arrives in the same chat while an album is pending,
+	// flush the pending album first so strict FIFO forwarding order is preserved.
+	if prevID := c.activeGroupByChat[chatID]; prevID != "" && prevID != msg.MediaGroupID {
+		c.flushActiveGroupLocked(chatID)
 	}
 
 	// 1. Media Group (album) message
@@ -76,20 +179,23 @@ func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
 
 		b := &mediaGroupBatch{
 			messages: initial,
+			chatID:   chatID,
 		}
 		b.timer = time.AfterFunc(c.timeout, func() {
 			c.mu.Lock()
+			defer c.mu.Unlock()
 			if c.batches[id] != b {
-				c.mu.Unlock()
 				return
 			}
 			msgs := b.messages
 			delete(c.batches, id)
-			c.mu.Unlock()
-
-			c.ready <- msgs
+			if c.activeGroupByChat[chatID] == id {
+				delete(c.activeGroupByChat, chatID)
+			}
+			c.emitLocked(msgs)
 		})
 		c.batches[id] = b
+		c.activeGroupByChat[chatID] = id
 		return
 	}
 
@@ -99,10 +205,10 @@ func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
 			pc.timer.Stop()
 			delete(c.pendingComments, chatID)
 			msgs := append(pc.messages, msg)
-			c.ready <- msgs
+			c.emitLocked(msgs)
 			return
 		}
-		c.ready <- []*tgbotapi.Message{msg}
+		c.emitLocked([]*tgbotapi.Message{msg})
 		return
 	}
 
@@ -112,10 +218,10 @@ func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
 			pc.timer.Stop()
 			delete(c.pendingComments, chatID)
 			msgs := append(pc.messages, msg)
-			c.ready <- msgs
+			c.emitLocked(msgs)
 			return
 		}
-		c.ready <- []*tgbotapi.Message{msg}
+		c.emitLocked([]*tgbotapi.Message{msg})
 		return
 	}
 
@@ -125,23 +231,22 @@ func (c *mediaGroupCollector) Add(msg *tgbotapi.Message) {
 	if pc, hasPending := c.pendingComments[chatID]; hasPending {
 		pc.timer.Stop()
 		delete(c.pendingComments, chatID)
-		c.ready <- pc.messages
+		c.emitLocked(pc.messages)
 	}
 
 	b := &mediaGroupBatch{
 		messages: []*tgbotapi.Message{msg},
+		chatID:   chatID,
 	}
 	b.timer = time.AfterFunc(c.timeout, func() {
 		c.mu.Lock()
+		defer c.mu.Unlock()
 		if c.pendingComments[chatID] != b {
-			c.mu.Unlock()
 			return
 		}
 		msgs := b.messages
 		delete(c.pendingComments, chatID)
-		c.mu.Unlock()
-
-		c.ready <- msgs
+		c.emitLocked(msgs)
 	})
 	c.pendingComments[chatID] = b
 }
@@ -152,6 +257,9 @@ func (c *mediaGroupCollector) StopAll() {
 	for id, b := range c.batches {
 		b.timer.Stop()
 		delete(c.batches, id)
+	}
+	for chatID := range c.activeGroupByChat {
+		delete(c.activeGroupByChat, chatID)
 	}
 	for chatID, b := range c.pendingComments {
 		b.timer.Stop()
@@ -191,26 +299,55 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 	}
 	logger.Printf("config path: %s", cfg.ConfigPath)
 
-	// Setup wizard sessions (per-chat).
+	// Setup wizard sessions (per-chat) and shared config protected by stateMu.
+	var stateMu sync.Mutex
 	sessions := map[int64]*setup.Wizard{}
 
 	updateCfg := tgbotapi.NewUpdate(0)
 	updateCfg.Timeout = int(rt.PollTimeout.Seconds())
 	updates := bot.GetUpdatesChan(updateCfg)
 
-	mgReady := make(chan []*tgbotapi.Message, 64)
-	mgCollector := newMediaGroupCollector(mgReady, 1200*time.Millisecond)
+	queue := newPostQueue()
+	mgCollector := newMediaGroupCollectorWithQueue(queue, 1200*time.Millisecond)
 	defer mgCollector.StopAll()
+
+	// Dedicated sequential worker: processes queued posts strictly one by one in FIFO order
+	// while the main loop continues ingesting incoming Telegram updates without blocking.
+	var workerWG sync.WaitGroup
+	workerWG.Add(1)
+	go func() {
+		defer workerWG.Done()
+		for {
+			msgs, ok := queue.Dequeue(ctx)
+			if !ok {
+				return
+			}
+			remaining := queue.Len()
+			if remaining > 0 {
+				logger.Printf("processing post batch (%d message(s), %d more post(s) waiting in queue)...", len(msgs), remaining)
+			}
+			stateMu.Lock()
+			err := handleMessages(ctx, logger, &cfg, tg, sessions, msgs)
+			stateMu.Unlock()
+			if err != nil {
+				logger.Printf("handleMessages error: %v", err)
+			}
+			if queue.Len() > 0 {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(500 * time.Millisecond):
+				}
+			}
+		}
+	}()
+	defer workerWG.Wait()
 
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Printf("shutdown requested")
 			return nil
-		case msgs := <-mgReady:
-			if err := handleMessages(ctx, logger, &cfg, tg, sessions, msgs); err != nil {
-				logger.Printf("handleMessages error: %v", err)
-			}
 		case upd := <-updates:
 			if upd.CallbackQuery != nil {
 				// Acknowledge callback queries (future inline-keyboard support).
@@ -233,10 +370,17 @@ func Run(ctx context.Context, logger *log.Logger, pollTimeout time.Duration) err
 				continue
 			}
 
+			stateMu.Lock()
+			inSetup := sessions[chatID] != nil
+			stateMu.Unlock()
+
 			// Commands, active setup wizard sessions, stale keyboard buttons, and stickers/voice
 			// should be handled immediately without buffering.
-			if upd.Message.IsCommand() || sessions[chatID] != nil || isStaleKeyboardButton(upd.Message.Text) || upd.Message.Sticker != nil || upd.Message.Voice != nil {
-				if err := handleMessages(ctx, logger, &cfg, tg, sessions, []*tgbotapi.Message{upd.Message}); err != nil {
+			if upd.Message.IsCommand() || inSetup || isStaleKeyboardButton(upd.Message.Text) || upd.Message.Sticker != nil || upd.Message.Voice != nil {
+				stateMu.Lock()
+				err := handleMessages(ctx, logger, &cfg, tg, sessions, []*tgbotapi.Message{upd.Message})
+				stateMu.Unlock()
+				if err != nil {
 					logger.Printf("handleMessages error: %v", err)
 				}
 				continue
@@ -875,6 +1019,11 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 						sendProgress("\u23f3 Fetching link preview image...")
 						imgCtx, imgCancel := context.WithTimeout(ctx, 15*time.Second)
 						imgBytes, mimeType, err := opengraph.FetchImage(imgCtx, httpClient, linkMeta.ImageURL, 10<<20)
+						if err != nil && forwardChannelUsername != "" && forwardMessageID > 0 {
+							if tgImg := opengraph.FetchTelegramWebPreviewImage(imgCtx, httpClient, forwardChannelUsername, forwardMessageID); tgImg != "" && tgImg != linkMeta.ImageURL {
+								imgBytes, mimeType, err = opengraph.FetchImage(imgCtx, httpClient, tgImg, 10<<20)
+							}
+						}
 						imgCancel()
 						if err != nil {
 							logger.Printf("[%d] failed to download preview image from %s: %v", chatID, linkMeta.ImageURL, err)
