@@ -615,11 +615,11 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 	if len(downloadedFiles) == 0 {
 		linkURL = ExtractFirstURL(caption, entities)
 		if linkURL != "" {
-			fetchCtx, fetchCancel := context.WithTimeout(ctx, 8*time.Second)
+			fetchCtx, fetchCancel := context.WithTimeout(ctx, 12*time.Second)
 			if m, err := opengraph.Fetch(fetchCtx, httpClient, linkURL); err == nil {
 				linkMeta = m
 			} else {
-				logger.Printf("OpenGraph fetch failed for %s: %v", linkURL, err)
+				logger.Printf("[%d] OpenGraph fetch failed for %s: %v", chatID, linkURL, err)
 			}
 			fetchCancel()
 		}
@@ -834,11 +834,13 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 				}
 			}
 		} else {
-			// Text or rich link preview post.
+			// Text or link post without inbound Telegram media.
+			// If the post contains URLs, fetch the first URL's preview image and attach/upload it
+			// directly as a LinkedIn image post (just like Telegram displays the preview image).
 			if linkURL != "" {
 				articleTitle := ""
 				articleDesc := ""
-				thumbnailURN := ""
+				previewImgURN := ""
 
 				if linkMeta != nil {
 					articleTitle = linkMeta.Title
@@ -846,39 +848,58 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 
 					if linkMeta.ImageURL != "" {
 						sendProgress("\u23f3 Fetching link preview image...")
-						imgCtx, imgCancel := context.WithTimeout(ctx, 10*time.Second)
+						imgCtx, imgCancel := context.WithTimeout(ctx, 15*time.Second)
 						imgBytes, mimeType, err := opengraph.FetchImage(imgCtx, httpClient, linkMeta.ImageURL, 10<<20)
 						imgCancel()
 						if err != nil {
-							logger.Printf("failed to download preview image from %s: %v", linkMeta.ImageURL, err)
+							logger.Printf("[%d] failed to download preview image from %s: %v", chatID, linkMeta.ImageURL, err)
 						} else {
 							uploadURL, imgURN, err := liClient.InitializeImageUpload(ctx, cfg.LinkedInAuthorURN)
 							if err != nil {
-								logger.Printf("failed to init LinkedIn thumbnail upload: %v", err)
+								logger.Printf("[%d] failed to init LinkedIn preview image upload: %v", chatID, err)
 							} else if err := liClient.UploadImageBytes(ctx, uploadURL, mimeType, imgBytes); err != nil {
-								logger.Printf("failed to upload LinkedIn thumbnail image: %v", err)
+								logger.Printf("[%d] failed to upload LinkedIn preview image: %v", chatID, err)
 							} else {
-								thumbnailURN = imgURN
+								previewImgURN = imgURN
 							}
 						}
 					}
 				}
 
-				logger.Printf("[%d] creating LinkedIn article post (link=%s)...", chatID, linkURL)
-				if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, articleTitle, articleDesc, thumbnailURN); err == nil {
-					logger.Printf("[%d] LinkedIn article post created: %s", chatID, postID)
-					if u := FormatLinkedInPostURL(postID); u != "" {
-						postURLs = append(postURLs, u)
+				if previewImgURN != "" {
+					imgTitle := articleTitle
+					if imgTitle == "" {
+						imgTitle = "preview.jpg"
 					}
-				} else {
-					logger.Printf("[%d] LinkedIn article post failed (%v), falling back to text post", chatID, err)
-					if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {
-						errs = append(errs, fmt.Sprintf("LinkedIn post failed (article: %v; fallback: %v)", err, terr))
-						logger.Printf("[%d] LinkedIn fallback text post failed: %v", chatID, terr)
-					} else {
-						logger.Printf("[%d] LinkedIn text fallback created: %s", chatID, postID)
+					logger.Printf("[%d] creating LinkedIn image post with attached preview image (link=%s, image=%s)...", chatID, linkURL, previewImgURN)
+					if postID, err := liClient.CreateImagePost(ctx, cfg.LinkedInAuthorURN, caption, previewImgURN, imgTitle); err == nil {
+						logger.Printf("[%d] LinkedIn preview image post created: %s", chatID, postID)
 						if u := FormatLinkedInPostURL(postID); u != "" {
 							postURLs = append(postURLs, u)
+						}
+					} else {
+						logger.Printf("[%d] LinkedIn preview image post failed (%v), falling back to article/text post", chatID, err)
+						previewImgURN = ""
+					}
+				}
+
+				if previewImgURN == "" {
+					logger.Printf("[%d] creating LinkedIn article post (link=%s)...", chatID, linkURL)
+					if postID, err := liClient.CreateArticlePost(ctx, cfg.LinkedInAuthorURN, caption, linkURL, articleTitle, articleDesc, ""); err == nil {
+						logger.Printf("[%d] LinkedIn article post created: %s", chatID, postID)
+						if u := FormatLinkedInPostURL(postID); u != "" {
+							postURLs = append(postURLs, u)
+						}
+					} else {
+						logger.Printf("[%d] LinkedIn article post failed (%v), falling back to text post", chatID, err)
+						if postID, terr := liClient.CreateTextPost(ctx, cfg.LinkedInAuthorURN, caption); terr != nil {
+							errs = append(errs, fmt.Sprintf("LinkedIn post failed (article: %v; fallback: %v)", err, terr))
+							logger.Printf("[%d] LinkedIn fallback text post failed: %v", chatID, terr)
+						} else {
+							logger.Printf("[%d] LinkedIn text fallback created: %s", chatID, postID)
+							if u := FormatLinkedInPostURL(postID); u != "" {
+								postURLs = append(postURLs, u)
+							}
 						}
 					}
 				}

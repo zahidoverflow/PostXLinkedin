@@ -192,15 +192,20 @@ func ExtractInboundMedia(msg *tgbotapi.Message) *InboundMedia {
 	return nil
 }
 
-var urlRegex = regexp.MustCompile(`https?://[^\s<>"'{}|\\^` + "`" + `]+`)
+var urlRegex = regexp.MustCompile(`https?://[^\s<>"'{}|\\^` + "`" + `)\]）]+`)
 
-// ExtractFirstURL extracts the first valid HTTP or HTTPS URL from a message
-// using Telegram entities if available, falling back to regex.
+// ExtractFirstURL extracts the first valid HTTP or HTTPS URL in order of appearance
+// from a message, taking into account both plain URLs and Telegram text_link/url entities.
 func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
+	expanded := ExpandTextLinks(text, entities)
+	if u := urlRegex.FindString(expanded); u != "" {
+		return strings.TrimRight(u, ".,;:!?)>]}'\"”）")
+	}
+
 	u16 := utf16.Encode([]rune(text))
 	for _, ent := range entities {
-		if ent.Type == "text_link" && ent.URL != "" {
-			return ent.URL
+		if ent.Type == "text_link" && strings.TrimSpace(ent.URL) != "" {
+			return strings.TrimSpace(ent.URL)
 		}
 		if ent.Type == "url" {
 			start := ent.Offset
@@ -208,16 +213,12 @@ func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
 			if start >= 0 && end <= len(u16) && start < end {
 				u := string(utf16.Decode(u16[start:end]))
 				if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-					return strings.TrimRight(u, ".,;:!?)>]}'")
+					return strings.TrimRight(u, ".,;:!?)>]}'\"”）")
 				}
 			}
 		}
 	}
 
-	u := urlRegex.FindString(text)
-	if u != "" {
-		return strings.TrimRight(u, ".,;:!?)>]}'")
-	}
 	return ""
 }
 

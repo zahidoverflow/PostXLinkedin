@@ -213,6 +213,29 @@ func TestExtractFirstURL(t *testing.T) {
 			text: "Just an ordinary status update without links",
 			want: "",
 		},
+		{
+			name: "multiple urls picks first url before later text_link",
+			text: "Check https://github.com/nullfuzz-pentest/shodan-dorks and also Source.",
+			entities: []tgbotapi.MessageEntity{
+				{
+					Type:   "url",
+					Offset: 6,
+					Length: 48,
+				},
+				{
+					Type:   "text_link",
+					Offset: 64,
+					Length: 7,
+					URL:    "https://second.example.com/article",
+				},
+			},
+			want: "https://github.com/nullfuzz-pentest/shodan-dorks",
+		},
+		{
+			name: "multiple urls picks first text_link before later plain url",
+			text: "First (https://first.example.com/one) and second https://second.example.com/two",
+			want: "https://first.example.com/one",
+		},
 	}
 
 	for _, tt := range tests {
