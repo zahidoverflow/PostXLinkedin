@@ -399,7 +399,7 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 	if len(msgs) == 0 {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	msg := msgs[0]
@@ -697,6 +697,20 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 		}
 
 		for idx, item := range mediaItems {
+			maxBytes := cfg.MaxImageBytes
+			if item.inbound.Category == MediaCategoryDocument || item.inbound.Category == MediaCategoryVideo {
+				if maxBytes < 100<<20 {
+					maxBytes = 100 << 20
+				}
+			}
+
+			if item.inbound.FileSize > maxBytes {
+				deleteProgress()
+				logger.Printf("[%d] rejected file too large before download: %s (%d bytes > %d max)", chatID, item.inbound.Filename, item.inbound.FileSize, maxBytes)
+				_, _ = tg.SendHTML(chatID, fmt.Sprintf("\u274c File too large (%d bytes). Max allowed is %d bytes.\n\nTry compressing or resizing.", item.inbound.FileSize, maxBytes))
+				return errors.New("file too large")
+			}
+
 			logger.Printf("[%d] downloading %s (%d/%d): file_id=%s filename=%s size=%d",
 				chatID, item.inbound.Category, idx+1, len(mediaItems), item.inbound.FileID, item.inbound.Filename, item.inbound.FileSize)
 
@@ -706,13 +720,6 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 				logger.Printf("[%d] download item %d failed: %v", chatID, idx+1, err)
 				_, _ = tg.SendHTML(chatID, "\u274c Failed to download file from Telegram. Try sending it again.")
 				return err
-			}
-
-			maxBytes := cfg.MaxImageBytes
-			if item.inbound.Category == MediaCategoryDocument || item.inbound.Category == MediaCategoryVideo {
-				if maxBytes < 25<<20 {
-					maxBytes = 25 << 20
-				}
 			}
 
 			if int64(len(d.Bytes)) > maxBytes {
@@ -743,7 +750,7 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 	caption = strings.ReplaceAll(caption, "\r", "")
 
 	// Mode: direct API calls to X + LinkedIn.
-	httpClient := &http.Client{Timeout: 180 * time.Second}
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
 	var postURLs []string
 	var errs []string
 
