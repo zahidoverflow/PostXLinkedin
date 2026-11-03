@@ -418,3 +418,82 @@ func TestMediaGroupCollector(t *testing.T) {
 		t.Fatalf("timed out waiting for media group batch")
 	}
 }
+
+func TestMediaGroupCollectorForwardWithComment(t *testing.T) {
+	ready := make(chan []*tgbotapi.Message, 10)
+	collector := newMediaGroupCollector(ready, 150*time.Millisecond)
+	defer collector.StopAll()
+
+	chat := &tgbotapi.Chat{ID: 593365882}
+	// User forwards PDF with comment: Telegram sends comment text first, then forwarded PDF
+	commentMsg := &tgbotapi.Message{
+		MessageID: 2244,
+		Chat:      chat,
+		Text:      "818312296-05-Windows-Lateral-Movement.pdf",
+	}
+	pdfMsg := &tgbotapi.Message{
+		MessageID:   2245,
+		Chat:        chat,
+		ForwardDate: 1792758597,
+		Document: &tgbotapi.Document{
+			FileID:   "doc-file-id-1",
+			FileName: "818312296-05-Windows-Lateral-Movement.pdf",
+			MimeType: "application/pdf",
+		},
+	}
+
+	collector.Add(commentMsg)
+	collector.Add(pdfMsg)
+
+	select {
+	case batch := <-ready:
+		if len(batch) != 2 {
+			t.Fatalf("expected 2 messages merged into batch, got %d", len(batch))
+		}
+		if batch[0].MessageID != 2244 || batch[1].MessageID != 2245 {
+			t.Errorf("unexpected message order: %d, %d", batch[0].MessageID, batch[1].MessageID)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for merged comment+PDF batch")
+	}
+
+	// Ensure no duplicate timer emission happens after timeout
+	select {
+	case extra := <-ready:
+		t.Fatalf("unexpected extra batch emitted: %+v", extra)
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+func TestRedundantFilenameCommentAndMeaningfulFilename(t *testing.T) {
+	if !isRedundantFilenameComment(
+		"Nmap-From-Basics-to-Pro-pptx.pdf",
+		"👁 Nmap Basics to Pro\n\nNmap is one of the most important tools for OSCP Exam.",
+		[]string{"1053577189-Nmap-From-Basics-to-Pro-pptx.pdf"},
+	) {
+		t.Errorf("expected Nmap-From-Basics-to-Pro-pptx.pdf to be recognized as redundant filename comment")
+	}
+
+	if !isRedundantFilenameComment(
+		"bountytips100+.pdf",
+		"Some caption",
+		[]string{"bounty_tips_100+.pdf"},
+	) {
+		t.Errorf("expected bountytips100+.pdf to match bounty_tips_100+.pdf")
+	}
+
+	if isRedundantFilenameComment(
+		"Must-read OSCP notes for lateral movement!",
+		"👁 Nmap Basics to Pro",
+		[]string{"1053577189-Nmap-From-Basics-to-Pro-pptx.pdf"},
+	) {
+		t.Errorf("expected genuine user commentary not to be treated as redundant filename")
+	}
+
+	if !hasMeaningfulFilename("bounty_tips_100+.pdf") {
+		t.Errorf("expected bounty_tips_100+.pdf to be meaningful filename")
+	}
+	if hasMeaningfulFilename("photo.jpg") {
+		t.Errorf("expected photo.jpg not to be meaningful filename")
+	}
+}
