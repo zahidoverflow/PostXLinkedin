@@ -433,19 +433,28 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 	// both the user's comment message (m.Text) and the forwarded media message (m.Caption).
 	var captionText string
 	var captionEntities []tgbotapi.MessageEntity
+	var captionFirstURL string
 	var commentText string
 	var commentEntities []tgbotapi.MessageEntity
+	var commentFirstURL string
+	var forwardChannelUsername string
+	var forwardMessageID int
 	isForwarded := false
 
 	for _, m := range msgs {
 		if isMessageForwarded(m) {
 			isForwarded = true
 		}
+		if forwardChannelUsername == "" && m.ForwardFromChat != nil && m.ForwardFromChat.UserName != "" && m.ForwardFromMessageID > 0 {
+			forwardChannelUsername = m.ForwardFromChat.UserName
+			forwardMessageID = m.ForwardFromMessageID
+		}
 		if captionText == "" && m.Caption != "" {
 			captionEntities = m.CaptionEntities
 			if len(captionEntities) == 0 {
 				captionEntities = m.Entities
 			}
+			captionFirstURL = ExtractFirstURL(m.Caption, captionEntities)
 			captionText = ExpandTextLinks(m.Caption, captionEntities)
 		}
 		if commentText == "" && m.Text != "" {
@@ -453,26 +462,31 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 			if len(commentEntities) == 0 {
 				commentEntities = m.CaptionEntities
 			}
+			commentFirstURL = ExtractFirstURL(m.Text, commentEntities)
 			commentText = ExpandTextLinks(m.Text, commentEntities)
 		}
 	}
 
 	var postText string
-	var entities []tgbotapi.MessageEntity
+	var rawFirstURL string
 	switch {
 	case captionText != "" && commentText == "":
 		postText = captionText
-		entities = captionEntities
+		rawFirstURL = captionFirstURL
 	case captionText == "" && commentText != "":
 		postText = commentText
-		entities = commentEntities
+		rawFirstURL = commentFirstURL
 	case captionText != "" && commentText != "":
 		if isRedundantFilenameComment(commentText, captionText, filenames) {
 			postText = captionText
-			entities = captionEntities
+			rawFirstURL = captionFirstURL
 		} else {
 			postText = strings.TrimSpace(commentText) + "\n\n" + strings.TrimSpace(captionText)
-			entities = captionEntities
+			if commentFirstURL != "" {
+				rawFirstURL = commentFirstURL
+			} else {
+				rawFirstURL = captionFirstURL
+			}
 		}
 	}
 
@@ -613,13 +627,24 @@ func handleMessages(ctx context.Context, logger *log.Logger, cfg *Config, tg *te
 	linkURL := ""
 	var linkMeta *opengraph.Metadata
 	if len(downloadedFiles) == 0 {
-		linkURL = ExtractFirstURL(caption, entities)
+		linkURL = rawFirstURL
+		if linkURL == "" {
+			linkURL = ExtractFirstURL(caption, nil)
+		}
 		if linkURL != "" {
 			fetchCtx, fetchCancel := context.WithTimeout(ctx, 12*time.Second)
 			if m, err := opengraph.Fetch(fetchCtx, httpClient, linkURL); err == nil {
 				linkMeta = m
 			} else {
 				logger.Printf("[%d] OpenGraph fetch failed for %s: %v", chatID, linkURL, err)
+			}
+			if (linkMeta == nil || linkMeta.ImageURL == "") && forwardChannelUsername != "" && forwardMessageID > 0 {
+				if tgImg := opengraph.FetchTelegramWebPreviewImage(fetchCtx, httpClient, forwardChannelUsername, forwardMessageID); tgImg != "" {
+					if linkMeta == nil {
+						linkMeta = &opengraph.Metadata{}
+					}
+					linkMeta.ImageURL = tgImg
+				}
 			}
 			fetchCancel()
 		}

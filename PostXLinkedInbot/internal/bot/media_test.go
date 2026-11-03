@@ -372,6 +372,29 @@ func TestExpandTextLinks(t *testing.T) {
 	if got := ExpandTextLinks("safe text", badEntities); got != "safe text" {
 		t.Errorf("expected safe text for out-of-range offsets, got %q", got)
 	}
+
+	// 8. Hidden zero-width \u200b text_link at offset 0 (Telegram preview trick) must NOT pollute title
+	krebsURL := "https://krebsonsecurity.com/2026/11/tech-firms-dismantle-botnet-that-turned-1-3m-tv-boxes-into-proxies/"
+	krebsRaw := "\u200bTech Firms Dismantle Botnet That Turned 1.3M TV Boxes Into Proxies\n\n" + krebsURL
+	krebsEntities := []tgbotapi.MessageEntity{
+		{Type: "text_link", Offset: 0, Length: 1, URL: krebsURL},
+	}
+	wantKrebs := "Tech Firms Dismantle Botnet That Turned 1.3M TV Boxes Into Proxies\n\n" + krebsURL
+	if got := ExpandTextLinks(krebsRaw, krebsEntities); got != wantKrebs {
+		t.Errorf("ExpandTextLinks hidden preview link got %q, want %q", got, wantKrebs)
+	}
+	if gotURL := ExtractFirstURL(krebsRaw, krebsEntities); gotURL != krebsURL {
+		t.Errorf("ExtractFirstURL hidden preview link got %q, want %q", gotURL, krebsURL)
+	}
+
+	// 9. Hyperlinked title where the same URL is already in plain text at the bottom
+	titleLinked := "Tech Firms Dismantle Botnet That Turned 1.3M TV Boxes Into Proxies\n\n" + krebsURL
+	titleEntities := []tgbotapi.MessageEntity{
+		{Type: "text_link", Offset: 0, Length: 66, URL: krebsURL},
+	}
+	if got := ExpandTextLinks(titleLinked, titleEntities); got != wantKrebs {
+		t.Errorf("ExpandTextLinks already-in-text URL got %q, want %q", got, wantKrebs)
+	}
 }
 
 func TestSampleAIPost8557(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -194,40 +195,104 @@ func ExtractInboundMedia(msg *tgbotapi.Message) *InboundMedia {
 
 var urlRegex = regexp.MustCompile(`https?://[^\s<>"'{}|\\^` + "`" + `)\]）]+`)
 
+func cleanExtractedURL(u string) string {
+	u = strings.TrimSpace(strings.ReplaceAll(u, "&amp;", "&"))
+	return strings.TrimRight(u, ".,;:!?)>]}'\"”）")
+}
+
+// isInvisibleAnchor reports whether s contains no visible characters
+// (e.g. only whitespace, control chars, or zero-width/format chars like \u200b used by Telegram channels for hidden preview links).
+func isInvisibleAnchor(s string) bool {
+	for _, r := range s {
+		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Cc, r) {
+			continue
+		}
+		if r == '\u2800' || r == '\u3164' || r == '\uffa0' || r == '\u180e' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// stripZeroWidth removes zero-width/format characters while preserving normal whitespace.
+func stripZeroWidth(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.Is(unicode.Cf, r) || r == '\u2800' || r == '\u3164' || r == '\uffa0' || r == '\u180e' {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// textContainsPlainURL reports whether targetURL already appears as a plain HTTP/HTTPS URL in text.
+func textContainsPlainURL(text, targetURL string) bool {
+	targetNorm := strings.TrimRight(cleanExtractedURL(targetURL), "/")
+	if targetNorm == "" {
+		return false
+	}
+	for _, m := range urlRegex.FindAllString(text, -1) {
+		cand := strings.TrimRight(cleanExtractedURL(m), "/")
+		if strings.EqualFold(cand, targetNorm) {
+			return true
+		}
+	}
+	return false
+}
+
 // ExtractFirstURL extracts the first valid HTTP or HTTPS URL in order of appearance
 // from a message, taking into account both plain URLs and Telegram text_link/url entities.
 func ExtractFirstURL(text string, entities []tgbotapi.MessageEntity) string {
-	expanded := ExpandTextLinks(text, entities)
-	if u := urlRegex.FindString(expanded); u != "" {
-		return strings.TrimRight(u, ".,;:!?)>]}'\"”）")
+	bestOffset := -1
+	bestURL := ""
+
+	if loc := urlRegex.FindStringIndex(text); loc != nil {
+		u := cleanExtractedURL(text[loc[0]:loc[1]])
+		if u != "" {
+			bestOffset = len(utf16.Encode([]rune(text[:loc[0]])))
+			bestURL = u
+		}
 	}
 
 	u16 := utf16.Encode([]rune(text))
 	for _, ent := range entities {
 		if ent.Type == "text_link" && strings.TrimSpace(ent.URL) != "" {
-			return strings.TrimSpace(ent.URL)
-		}
-		if ent.Type == "url" {
+			u := cleanExtractedURL(ent.URL)
+			if u != "" && (bestOffset == -1 || ent.Offset < bestOffset) {
+				bestOffset = ent.Offset
+				bestURL = u
+			}
+		} else if ent.Type == "url" {
 			start := ent.Offset
 			end := ent.Offset + ent.Length
 			if start >= 0 && end <= len(u16) && start < end {
-				u := string(utf16.Decode(u16[start:end]))
-				if strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://") {
-					return strings.TrimRight(u, ".,;:!?)>]}'\"”）")
+				raw := string(utf16.Decode(u16[start:end]))
+				if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+					u := cleanExtractedURL(raw)
+					if u != "" && (bestOffset == -1 || start < bestOffset) {
+						bestOffset = start
+						bestURL = u
+					}
 				}
 			}
 		}
 	}
 
-	return ""
+	return bestURL
 }
 
 // ExpandTextLinks expands Telegram text_link entities into "Anchor (URL)" format.
-// If the anchor text is already identical to the URL or the URL immediately follows in parentheses,
+// If the anchor text is invisible (e.g. \u200b hidden preview link), already identical to the URL,
+// immediately followed by the URL in parentheses, or the URL already appears in the plain text,
 // duplicate URL insertion is avoided.
 func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
-	if text == "" || len(entities) == 0 {
+	if text == "" {
 		return text
+	}
+	if len(entities) == 0 {
+		return strings.TrimLeft(text, "\u200b\u200c\u200d\u2060\ufeff")
 	}
 
 	type textLink struct {
@@ -255,7 +320,7 @@ func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
 	}
 
 	if len(links) == 0 {
-		return text
+		return strings.TrimLeft(text, "\u200b\u200c\u200d\u2060\ufeff")
 	}
 
 	// Sort by offset ascending; if offsets match, wider range first.
@@ -286,6 +351,12 @@ func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
 		anchor := string(utf16.Decode(u16[start:end]))
 		cleanURL := strings.ReplaceAll(l.url, "&amp;", "&")
 
+		if isInvisibleAnchor(anchor) {
+			b.WriteString(stripZeroWidth(anchor))
+			lastPos = end
+			continue
+		}
+
 		// Check if anchor is already identical to the URL.
 		anchorTrimmed := strings.TrimSpace(anchor)
 		isSameURL := strings.EqualFold(anchorTrimmed, cleanURL) ||
@@ -303,7 +374,9 @@ func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
 			}
 		}
 
-		if isSameURL || alreadyFollowed {
+		alreadyInText := textContainsPlainURL(text, cleanURL)
+
+		if isSameURL || alreadyFollowed || alreadyInText {
 			b.WriteString(anchor)
 		} else {
 			// Separate any trailing whitespace or newlines from anchor to keep formatting natural.
@@ -325,7 +398,7 @@ func ExpandTextLinks(text string, entities []tgbotapi.MessageEntity) string {
 		b.WriteString(string(utf16.Decode(u16[lastPos:])))
 	}
 
-	return b.String()
+	return strings.TrimLeft(b.String(), "\u200b\u200c\u200d\u2060\ufeff")
 }
 
 // FormatLinkedInPostURL builds a web URL for a published LinkedIn post URN or ID.
